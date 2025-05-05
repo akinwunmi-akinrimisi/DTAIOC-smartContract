@@ -1,0 +1,17 @@
+{
+    "name": "DTAIOC Badge #0",
+    "description": "A badge awarded to winners of the DTAIOC game.",
+    "image": "ipfs://bafybeigofcndglhgthcq6qrmj3nuc3ahn7diovjxytuifk54t5svhufe4i",
+    "attributes": [
+      {
+        "trait_type": "Level",
+        "value": "1"
+      },
+      {
+        "trait_type": "Rarity",
+        "value": "Common"
+      }
+    ]
+  }
+
+  

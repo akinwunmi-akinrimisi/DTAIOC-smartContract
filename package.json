@@ -1,0 +1,28 @@
+{
+  "name": "dtaioc-smartcontract",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akinwunmi-akinrimisi/DTAIOC-smartContract.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/akinwunmi-akinrimisi/DTAIOC-smartContract/issues"
+  },
+  "homepage": "https://github.com/akinwunmi-akinrimisi/DTAIOC-smartContract#readme",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.0.2",
+    "hardhat": "^2.23.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.5.0"
+  }
+}
