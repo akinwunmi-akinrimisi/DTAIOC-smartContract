@@ -1,27 +1,41 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
-if (!process.env.PRIVATE_KEY) {
-  console.warn("⚠️ Warning: PRIVATE_KEY is not set in .env");
-}
-
+/** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
     version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
-        runs: 200,
+        runs: 200
       },
-      viaIR: false
-    },
+      viaIR: true,
+    }
   },
   networks: {
-    hardhat: {},
-    baseSepolia: {
-      url: process.env.BASE_SEPOLIA_RPC_URL,
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+    hardhat: {
+      forking: {
+        url: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
+        blockNumber: process.env.FORK_BLOCK_NUMBER ? parseInt(process.env.FORK_BLOCK_NUMBER) : undefined
+      },
+      accounts: {
+        count: 10, // Make sure we have enough accounts for the simulation
+        accountsBalance: "10000000000000000000000" // 10000 ETH
+      }
     },
+    baseSepolia: {
+      url: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
+      accounts: [
+        process.env.PRIVATE_KEY,
+        process.env.PRIVATE_KEY1,
+        process.env.PRIVATE_KEY2
+      ].filter(Boolean),
+      gasPrice: 1000000000, // 1 gwei
+    }
+  },
+  mocha: {
+    timeout: 100000
   },
   etherscan: {
     apiKey: {
@@ -38,10 +52,4 @@ module.exports = {
       },
     ],
   },
-  paths: {
-    sources: "./contracts",
-    tests: "./test",
-    cache: "./cache",
-    artifacts: "./artifacts"
-  }
 };

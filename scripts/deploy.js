@@ -1,47 +1,85 @@
-const hre = require("hardhat");
+const { ethers } = require("hardhat");
 
-   async function main() {
-     const [deployer] = await hre.ethers.getSigners();
-     console.log("Deploying contracts with account:", deployer.address);
+async function main() {
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying contracts with:", deployer.address);
 
-     // Deploy DTAIOCToken
-     const DTAIOCToken = await hre.ethers.getContractFactory("DTAIOCToken");
-     const token = await DTAIOCToken.deploy();
-     await token.waitForDeployment();
-     console.log("DTAIOCToken deployed to:", token.target);
+  // Deploy DTAIOCToken
+  const Token = await ethers.getContractFactory("DTAIOCToken");
+  const token = await Token.deploy();
+  await token.waitForDeployment();
+  console.log("DTAIOCToken deployed to:", token.target);
 
-     // Deploy DTAIOCNFT
-     const DTAIOCNFT = await hre.ethers.getContractFactory("DTAIOCNFT");
-     const nft = await DTAIOCNFT.deploy();
-     await nft.waitForDeployment();
-     console.log("DTAIOCNFT deployed to:", nft.target);
+  // Deploy DTAIOCNFT
+  const NFT = await ethers.getContractFactory("DTAIOCNFT");
+  const nft = await NFT.deploy();
+  await nft.waitForDeployment();
+  console.log("DTAIOCNFT deployed to:", nft.target);
 
-     // Deploy DTAIOCStaking
-     const platformAddress = "0x37706dAb5DA56EcCa562f4f26478d1C484f0A7fB"; 
-     const DTAIOCStaking = await hre.ethers.getContractFactory("DTAIOCStaking");
-     const staking = await DTAIOCStaking.deploy(token.target, platformAddress);
-     await staking.waitForDeployment();
-     console.log("DTAIOCStaking deployed to:", staking.target);
+  // Deploy DTAIOCStaking
+  const platformAddress = "0x37706dAb5DA56EcCa562f4f26478d1C484f0A7fB";
+  const Staking = await ethers.getContractFactory("DTAIOCStaking");
+  const staking = await Staking.deploy(token.target, platformAddress);
+  await staking.waitForDeployment();
+  console.log("DTAIOCStaking deployed to:", staking.target);
 
-     // Deploy MockBasenameResolver
-     const MockBasenameResolver = await hre.ethers.getContractFactory("MockBasenameResolver");
-     const resolver = await MockBasenameResolver.deploy();
-     await resolver.waitForDeployment();
-     console.log("MockBasenameResolver deployed to:", resolver.target);
+  // Verify staking contract owner
+  const stakingOwner = await staking.owner();
+  console.log("DTAIOCStaking owner:", stakingOwner);
+  if (stakingOwner !== deployer.address) {
+    console.warn("Warning: Deployer is not the owner of DTAIOCStaking");
+  }
 
-     // Deploy DTAIOCGame
-     const DTAIOCGame = await hre.ethers.getContractFactory("DTAIOCGame");
-     const game = await DTAIOCGame.deploy(token.target, nft.target, staking.target, resolver.target);
-     await game.waitForDeployment();
-     console.log("DTAIOCGame deployed to:", game.target);
+  // Deploy MockBasenameResolver
+  const Resolver = await ethers.getContractFactory("MockBasenameResolver");
+  const resolver = await Resolver.deploy();
+  await resolver.waitForDeployment();
+  console.log("MockBasenameResolver deployed to:", resolver.target);
 
-     // Configure contract permissions
-     await nft.setGameContract(game.target);
-     await staking.setGameContract(game.target);
-     console.log("Permissions configured for DTAIOCNFT and DTAIOCStaking");
-   }
+  // Deploy DTAIOCGame
+  const DTAIOCGame = await hre.ethers.getContractFactory("DTAIOCGame");
+  const backendWallet = new hre.ethers.Wallet(process.env.BACKENDSIGNERPRIVATEKEY);
+  const backendSigner = backendWallet.address;
+  const Game = await ethers.getContractFactory("DTAIOCGame");
+  const game = await Game.deploy(token.target, nft.target, staking.target, resolver.target, backendSigner);
+  await game.waitForDeployment();
+  console.log("DTAIOCGame deployed to:", game.target);
 
-   main().catch((error) => {
-     console.error(error);
-     process.exitCode = 1;
-   });
+  // Configure permissions
+  console.log("Setting game contract for NFT...");
+  const nftTx = await nft.setGameContract(game.target);
+  await nftTx.wait();
+  console.log("NFT game contract set to:", game.target);
+
+  console.log("Setting game contract for Staking...");
+  try {
+    const stakingTx = await staking.setGameContract(game.target);
+    await stakingTx.wait();
+    console.log("Staking game contract set to:", game.target);
+  } catch (error) {
+    console.error("Failed to set game contract for Staking:", error);
+    throw error;
+  }
+
+  // Verify gameContract
+  const gameContractAddress = await staking.gameContract();
+  console.log("Verified gameContract in Staking:", gameContractAddress);
+  if (gameContractAddress === ethers.ZeroAddress) {
+    throw new Error("Failed to set gameContract in Staking");
+  }
+
+  // Output addresses for forkGameSimulation.js
+  console.log("Update forkGameSimulation.js with:");
+  console.log(`tokenAddress: "${token.target}"`);
+  console.log(`nftAddress: "${nft.target}"`);
+  console.log(`stakingAddress: "${staking.target}"`);
+  console.log(`resolverAddress: "${resolver.target}"`);
+  console.log(`platformAddress: "${platformAddress}"`);
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

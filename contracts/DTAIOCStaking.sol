@@ -90,15 +90,40 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
         nonReentrant
     {
         require(winners.length == 3, "Must have 3 winners");
-        uint256 forfeited = forfeitedStakes[gameId];
-        require(forfeited > 0, "No forfeited stakes");
+        uint256 pool = totalStakes[gameId]; // 17.0
+        require(pool > 0, "No stakes to distribute");
 
-        uint256 creatorShare = (forfeited * 20) / 100;
-        uint256 platformShare = (forfeited * 20) / 100;
-        uint256 winnerShare = (forfeited * 60) / 100 / 3;
+        uint256 creatorShare = (pool * 20) / 100; // 20% = 3.4
+        uint256 platformShare = (pool * 20) / 100; // 20% = 3.4
+        uint256 winnerShare = (pool * 20) / 100; // 20% per winner = 3.4
 
+        // Track winner shares to handle duplicates
+        address[] memory uniqueWinners = new address[](3);
+        uint256[] memory winnerShares = new uint256[](3);
+        uint256 uniqueCount = 0;
+
+        for (uint256 i = 0; i < winners.length; i++) {
+            if (winners[i] != address(0)) {
+                bool found = false;
+                for (uint256 j = 0; j < uniqueCount; j++) {
+                    if (uniqueWinners[j] == winners[i]) {
+                        winnerShares[j] = winnerShares[j] + winnerShare;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    uniqueWinners[uniqueCount] = winners[i];
+                    winnerShares[uniqueCount] = winnerShare;
+                    uniqueCount++;
+                }
+            }
+        }
+
+        totalStakes[gameId] = 0;
         forfeitedStakes[gameId] = 0;
 
+        // Transfer creator and platform shares
         if (creatorShare > 0) {
             require(token.transfer(creator, creatorShare), "Creator transfer failed");
         }
@@ -106,13 +131,21 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
             require(token.transfer(platformAddress, platformShare), "Platform transfer failed");
         }
 
+        // Transfer winner shares + stakes
         for (uint256 i = 0; i < winners.length; i++) {
-            if (winners[i] != address(0)) {
-                uint256 totalWinnerAmount = winnerShare + playerStakes[gameId][winners[i]];
-                playerStakes[gameId][winners[i]] = 0;
-                totalStakes[gameId] -= playerStakes[gameId][winners[i]];
+            address winner = winners[i];
+            if (winner != address(0) && winnerShares[i] > 0) {
+                uint256 stakeReturn = playerStakes[gameId][winner];
+                uint256 totalWinnerAmount = winnerShares[i] + stakeReturn;
+                playerStakes[gameId][winner] = 0;
                 if (totalWinnerAmount > 0) {
-                    require(token.transfer(winners[i], totalWinnerAmount), "Winner transfer failed");
+                    require(token.transfer(winner, totalWinnerAmount), "Winner transfer failed");
+                }
+                for (uint256 k = 0; k < uniqueCount; k++) {
+                    if (uniqueWinners[k] == winner) {
+                        delete winnerShares[k];
+                        break;
+                    }
                 }
             }
         }

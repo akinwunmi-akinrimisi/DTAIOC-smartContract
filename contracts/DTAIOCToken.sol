@@ -24,7 +24,7 @@
            require(amount > 0, "Amount must be greater than 0");
            require(totalMinted + amount <= MAX_SUPPLY, "Exceeds max supply");
            require(mintedAmount[msg.sender] + amount <= MAX_MINT_PER_WALLET, "Exceeds max mint per wallet");
-           require(balanceOf(msg.sender) < MIN_BALANCE_FOR_MINT, "Balance must be below 10 tokens");
+        //    require(balanceOf(msg.sender) < MIN_BALANCE_FOR_MINT, "Balance must be below 10 tokens");
 
            mintedAmount[msg.sender] += amount;
            totalMinted += amount;
