@@ -31,12 +31,12 @@ async function main() {
   console.log("Backend signer:", backendSigner.address);
 
   // Contract addresses
-  const tokenAddress = "0xeb04Db566fa8e52B16d8E28C0ABF1Fdc9D9D341B";
-  const nftAddress = "0xA548FB4bd73235B6AFcE064e1dD26fbf8435923b";
-  const stakingAddress = "0xB279D4aA86A7aA88F4013B970f7E7330b92b69F5";
-  const resolverAddress = "0xb993c9F51D714167896cDe8F87118751a984cd98";
+  const tokenAddress = "0x46DAcEc0BeeE57c56b03F8362144075A097E4f01";
+  const nftAddress = "0xe330f2FDFb5568af4F9BD75e3b18C2723Fc47F05";
+  const stakingAddress = "0x5c417667C5187Db3DdB4f3569e49Be0a4E7844cC";
+  const resolverAddress = "0xa0206d7BDDbB73fD8FAE277C95AdC9A566AcE3AE";
   const platformAddress = "0x37706dAb5DA56EcCa562f4f26478d1C484f0A7fB";
-  const expectedGameAddress = "0x6BA18de5a6589DBe78452b000E31Cd51191288F6";
+  const expectedGameAddress = "0xd12385D761dEe072D23027D8ebA0b6FC071C3Acd";
 
   // Connect to contracts
   console.log("Connecting to contracts...");
