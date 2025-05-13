@@ -6,12 +6,6 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 interface IDTAIOCGame {
-    // function getPlayer(uint256 gameId, address playerAddress) external view returns (
-    //     string memory basename,
-    //     uint256 currentStage,
-    //     uint256 score,
-    //     uint256 completionTime
-    // );
     function getPlayer(uint256 gameId, address player) external view returns (string memory, uint256, uint256, uint256);
     function isPerfectScore(uint256 gameId, address player, uint256 stage) external view returns (bool);
 }
@@ -91,17 +85,24 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
         if (refundAmount > 0) {
             require(token.transfer(player, refundAmount), "Refund transfer failed");
         }
-        }
+    }
 
-    function distributeRewards(uint256 gameId, address creator, address platform, address[] memory winners) public onlyGameContract nonReentrant {
+    function distributeRewards(uint256 gameId, address creator, address platform, address[] memory winners) 
+        public 
+        onlyGameContract 
+        nonReentrant 
+    {
         uint256 pool = forfeitedStakes[gameId];
+        require(pool > 0, "No forfeited stakes to distribute");
         forfeitedStakes[gameId] = 0;
         uint256 winnerShare = pool * 20 / 100;
-        for (uint256 i = 0; i < winners.length && winners[i] != address(0); i++) {
-            if (winnerShare > 0) {
-                require(token.transfer(winners[i], winnerShare), "Winner transfer failed");
-            }
+
+        // Distribute to winners (stake + winnerShare)
+        if (winners.length > 0) {
+            _distributeWinnerShares(gameId, winners, winnerShare);
         }
+
+        // Distribute to creator and platform
         if (winnerShare > 0) {
             require(token.transfer(creator, winnerShare), "Creator transfer failed");
             require(token.transfer(platform, winnerShare), "Platform transfer failed");
@@ -136,6 +137,7 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
             uint256 stakeReturn = playerStakes[gameId][winner];
             uint256 totalWinnerAmount = winnerShares[i] + stakeReturn;
             playerStakes[gameId][winner] = 0;
+            totalStakes[gameId] -= stakeReturn;
             if (totalWinnerAmount > 0) {
                 require(token.transfer(winner, totalWinnerAmount), "Winner transfer failed");
             }

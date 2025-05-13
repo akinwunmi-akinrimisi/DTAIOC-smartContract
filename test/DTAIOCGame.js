@@ -1065,79 +1065,81 @@ describe("DTAIOCGame", function () {
     });
   });
 
+
   describe("Player Limit", function () {
-    let gameId, stage1Answers, stage2Fail;
+      let gameId, stage1Answers, stage2Fail;
 
-    beforeEach(async function () {
-      gameId = Number(await game.gameCounter()) + 1;
-      stage1Answers = await generateAnswerHashes(5, 1);
-      stage2Fail = await generateAnswerHashes(3, 2);
-      const questionRootHashes = [
-        ethers.keccak256(ethers.toUtf8Bytes(`stage1_questions_${hashCounter++}`)),
-        ethers.keccak256(ethers.toUtf8Bytes(`stage2_questions_${hashCounter++}`)),
-        ethers.keccak256(ethers.toUtf8Bytes(`stage3_questions_${hashCounter++}`))
-      ];
-      await game.connect(creator).createGame(creatorBasenameNode, questionRootHashes, gameDuration);
-    });
+      beforeEach(async function () {
+          gameId = Number(await game.gameCounter()) + 1;
+          stage1Answers = await generateAnswerHashes(5, 1);
+          stage2Fail = await generateAnswerHashes(3, 2);
+          const questionRootHashes = [
+              ethers.keccak256(ethers.toUtf8Bytes(`stage1_questions_${hashCounter++}`)),
+              ethers.keccak256(ethers.toUtf8Bytes(`stage2_questions_${hashCounter++}`)),
+              ethers.keccak256(ethers.toUtf8Bytes(`stage3_questions_${hashCounter++}`))
+          ];
+          await game.connect(creator).createGame(creatorBasenameNode, questionRootHashes, gameDuration);
+      });
 
-    it("Should allow new players to join after quiz ends for a player", async function () {
-      const signatures = await Promise.all([
-        generateJoinSignature(backendSigner, player1.address, player1Basename, gameId),
-        generateJoinSignature(backendSigner, player2.address, player2Basename, gameId)
-      ]);
+      it("Should allow new players to join after quiz ends for a player", async function () {
+          const signatures = await Promise.all([
+              generateJoinSignature(backendSigner, player1.address, player1Basename, gameId),
+              generateJoinSignature(backendSigner, player2.address, player2Basename, gameId)
+          ]);
 
-      await game.connect(player1).joinGame(gameId, player1Basename, signatures[0]);
-      let answerSignature = await generateAnswerSignature(
-        backendSigner,
-        gameId,
-        player1.address,
-        1,
-        5,
-        stage1Answers.answerHashes
-      );
-      await game.connect(player1).submitAnswers(gameId, 1, stage1Answers.answerHashes, 5, answerSignature);
-      await game.connect(owner).advanceStage(gameId); // Stage 2
+          await game.connect(player1).joinGame(gameId, player1Basename, signatures[0]);
+          let answerSignature = await generateAnswerSignature(
+              backendSigner,
+              gameId,
+              player1.address,
+              1,
+              5,
+              stage1Answers.answerHashes
+          );
+          await game.connect(player1).submitAnswers(gameId, 1, stage1Answers.answerHashes, 5, answerSignature);
+          await game.connect(owner).advanceStage(gameId); // Stage 2
 
-      answerSignature = await generateAnswerSignature(
-        backendSigner,
-        gameId,
-        player1.address,
-        2,
-        3,
-        stage2Fail.answerHashes
-      );
-      await game.connect(player1).submitAnswers(gameId, 2, stage2Fail.answerHashes, 3, answerSignature);
+          answerSignature = await generateAnswerSignature(
+              backendSigner,
+              gameId,
+              player1.address,
+              2,
+              3,
+              stage2Fail.answerHashes
+          );
+          await game.connect(player1).submitAnswers(gameId, 2, stage2Fail.answerHashes, 3, answerSignature);
 
-      const gameData = await game.games(gameId);
-      expect(gameData.playerCount).to.equal(0n);
+          const gameData = await game.games(gameId);
+          expect(gameData.playerCount).to.equal(0n);
 
-      await game.connect(player2).joinGame(gameId, player2Basename, signatures[1]);
+          await game.connect(player2).joinGame(gameId, player2Basename, signatures[1]);
 
-      const updatedGameData = await game.games(gameId);
-      expect(updatedGameData.playerCount).to.equal(1n);
-      expect(await game.isPlayerInGame(gameId, player2.address)).to.equal(true);
-    });
+          const updatedGameData = await game.games(gameId);
+          expect(updatedGameData.playerCount).to.equal(1n);
+          expect(await game.isPlayerInGame(gameId, player2.address)).to.equal(true);
+      });
 
-    it("Should revert joining when player limit is reached", async function () {
-      const signature = await generateJoinSignature(backendSigner, player2.address, player2Basename, gameId);
+      it("Should revert joining when player limit is reached", async function () {
+          const signature = await generateJoinSignature(backendSigner, player2.address, player2Basename, gameId);
 
-      // Set playerCount to 100 (PLAYER_LIMIT) at slot gamesData[gameId] + 6
-      const gameSlot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [gameId]));
-      const playerCountSlot = `0x${(BigInt(gameSlot) + 6n).toString(16).padStart(64, '0')}`;
-      console.log("Setting playerCount slot:", playerCountSlot);
-      await ethers.provider.send("hardhat_setStorageAt", [
-        game.target,
-        playerCountSlot,
-        ethers.toBeHex(100, 32)
-      ]);
-      const slotValue = await ethers.provider.getStorage(game.target, playerCountSlot);
-      console.log("Slot value after setting:", slotValue);
+          // Set playerCount to 100 (PLAYER_LIMIT) at slot gamesData[gameId] + 4
+          const gameSlot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [gameId]));
+          const playerCountSlot = `0x${(BigInt(gameSlot) + 4n).toString(16).padStart(64, '0')}`;
+          console.log("Setting playerCount slot:", playerCountSlot);
+          await ethers.provider.send("hardhat_setStorageAt", [
+              game.target,
+              playerCountSlot,
+              ethers.toBeHex(100, 32)
+          ]);
+          const slotValue = await ethers.provider.getStorage(game.target, playerCountSlot);
+          console.log("Slot value after setting:", slotValue);
 
-      await expect(
-        game.connect(player2).joinGame(gameId, player2Basename, signature)
-      ).to.be.revertedWith("Player limit reached");
-    });
+          await expect(
+              game.connect(player2).joinGame(gameId, player2Basename, signature)
+          ).to.be.revertedWith("Player limit reached");
+      });
   });
+
 
   describe("Backend Signer", function () {
     it("Should allow owner to update backend signer", async function () {
