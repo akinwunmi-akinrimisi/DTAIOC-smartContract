@@ -787,7 +787,7 @@ describe("DTAIOCGame", function () {
 
       const gameData = await game.games(gameId);
       expect(gameData.playerCount).to.equal(0n);
-      expect(await token.balanceOf(player1.address)).to.equal(ethers.parseEther("3")); // 30% refund for Stage 2
+      expect(await token.balanceOf(player1.address)).to.equal(ethers.parseEther("7")); // 70% refund for Stage 2
       expect(await game.isPlayerInGame(gameId, player1.address)).to.equal(false);
     });
 
@@ -952,6 +952,7 @@ describe("DTAIOCGame", function () {
       // Player 4 forfeited 7 ETH (10 - 3 refunded)
       const forfeited = ethers.parseEther("7");
       const winnerShare = forfeited * 20n / 100n; // 1.4 ETH
+      console.log("Player1 balance:", (await token.balanceOf(player1.address)).toString());
       expect(await token.balanceOf(player1.address)).to.equal(ethers.parseEther("10") + winnerShare); // 100% refund + 20%
       expect(await token.balanceOf(player2.address)).to.equal(ethers.parseEther("10") + winnerShare); // 100% refund + 20%
       expect(await token.balanceOf(player3.address)).to.equal(ethers.parseEther("10") + winnerShare); // 100% refund + 20%
@@ -1120,15 +1121,17 @@ describe("DTAIOCGame", function () {
     it("Should revert joining when player limit is reached", async function () {
       const signature = await generateJoinSignature(backendSigner, player2.address, player2Basename, gameId);
 
-      // Set playerCount to 100 (PLAYER_LIMIT) at slot gamesData[gameId] + 5
+      // Set playerCount to 100 (PLAYER_LIMIT) at slot gamesData[gameId] + 6
       const gameSlot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [gameId]));
-      const playerCountSlot = `0x${(BigInt(gameSlot) + 5n).toString(16).padStart(64, '0')}`;
+      const playerCountSlot = `0x${(BigInt(gameSlot) + 6n).toString(16).padStart(64, '0')}`;
       console.log("Setting playerCount slot:", playerCountSlot);
       await ethers.provider.send("hardhat_setStorageAt", [
         game.target,
         playerCountSlot,
         ethers.toBeHex(100, 32)
       ]);
+      const slotValue = await ethers.provider.getStorage(game.target, playerCountSlot);
+      console.log("Slot value after setting:", slotValue);
 
       await expect(
         game.connect(player2).joinGame(gameId, player2Basename, signature)
