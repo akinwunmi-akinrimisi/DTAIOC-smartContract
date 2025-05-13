@@ -5,6 +5,17 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+interface IDTAIOCGame {
+    // function getPlayer(uint256 gameId, address playerAddress) external view returns (
+    //     string memory basename,
+    //     uint256 currentStage,
+    //     uint256 score,
+    //     uint256 completionTime
+    // );
+    function getPlayer(uint256 gameId, address player) external view returns (string memory, uint256, uint256, uint256);
+    function isPerfectScore(uint256 gameId, address player, uint256 stage) external view returns (bool);
+}
+
 contract DTAIOCStaking is Ownable, ReentrancyGuard {
     IERC20 public token;
     address public gameContract;
@@ -57,20 +68,18 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
         totalStakes[gameId] += amount;
     }
 
-    function refund(uint256 gameId, address player, uint256 stage)
-        public
-        onlyGameContract
-        nonReentrant
-    {
+    function refund(uint256 gameId, address player, uint256 stage) public onlyGameContract nonReentrant {
         uint256 playerStake = playerStakes[gameId][player];
         require(playerStake > 0, "No stake found");
+        require(stage >= 1 && stage <= 3, "Invalid stage");
+
+        (, uint256 currentStage, uint256 score,) = IDTAIOCGame(gameContract).getPlayer(gameId, player);
+        require(currentStage == stage, "Stage mismatch");
 
         uint256 refundPercentage;
-        if (stage == 1) refundPercentage = 0;
-        else if (stage == 2) refundPercentage = 30;
-        else if (stage == 3) refundPercentage = 70;
-        else if (stage == 4) refundPercentage = 100;
-        else revert("Invalid stage");
+        if (stage == 1) refundPercentage = score == 5 ? 30 : 0;
+        else if (stage == 2) refundPercentage = score == 5 ? 70 : 30;
+        else if (stage == 3) refundPercentage = score == 5 ? 100 : 70;
 
         uint256 refundAmount = (playerStake * refundPercentage) / 100;
         uint256 forfeitedAmount = playerStake - refundAmount;
@@ -82,22 +91,24 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
         if (refundAmount > 0) {
             require(token.transfer(player, refundAmount), "Refund transfer failed");
         }
+        }
+
+    function distributeRewards(uint256 gameId, address creator, address platform, address[] memory winners) public onlyGameContract nonReentrant {
+        uint256 pool = forfeitedStakes[gameId];
+        forfeitedStakes[gameId] = 0;
+        uint256 winnerShare = pool * 20 / 100;
+        for (uint256 i = 0; i < winners.length && winners[i] != address(0); i++) {
+            if (winnerShare > 0) {
+                require(token.transfer(winners[i], winnerShare), "Winner transfer failed");
+            }
+        }
+        if (winnerShare > 0) {
+            require(token.transfer(creator, winnerShare), "Creator transfer failed");
+            require(token.transfer(platform, winnerShare), "Platform transfer failed");
+        }
     }
 
-    function distributeRewards(uint256 gameId, address creator, address[] memory winners)
-        public
-        onlyGameContract
-        nonReentrant
-    {
-        require(winners.length == 3, "Must have 3 winners");
-        uint256 pool = totalStakes[gameId]; // 17.0
-        require(pool > 0, "No stakes to distribute");
-
-        uint256 creatorShare = (pool * 20) / 100; // 20% = 3.4
-        uint256 platformShare = (pool * 20) / 100; // 20% = 3.4
-        uint256 winnerShare = (pool * 20) / 100; // 20% per winner = 3.4
-
-        // Track winner shares to handle duplicates
+    function _distributeWinnerShares(uint256 gameId, address[] memory winners, uint256 winnerShare) private {
         address[] memory uniqueWinners = new address[](3);
         uint256[] memory winnerShares = new uint256[](3);
         uint256 uniqueCount = 0;
@@ -107,7 +118,7 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
                 bool found = false;
                 for (uint256 j = 0; j < uniqueCount; j++) {
                     if (uniqueWinners[j] == winners[i]) {
-                        winnerShares[j] = winnerShares[j] + winnerShare;
+                        winnerShares[j] += winnerShare;
                         found = true;
                         break;
                     }
@@ -120,33 +131,13 @@ contract DTAIOCStaking is Ownable, ReentrancyGuard {
             }
         }
 
-        totalStakes[gameId] = 0;
-        forfeitedStakes[gameId] = 0;
-
-        // Transfer creator and platform shares
-        if (creatorShare > 0) {
-            require(token.transfer(creator, creatorShare), "Creator transfer failed");
-        }
-        if (platformShare > 0) {
-            require(token.transfer(platformAddress, platformShare), "Platform transfer failed");
-        }
-
-        // Transfer winner shares + stakes
-        for (uint256 i = 0; i < winners.length; i++) {
-            address winner = winners[i];
-            if (winner != address(0) && winnerShares[i] > 0) {
-                uint256 stakeReturn = playerStakes[gameId][winner];
-                uint256 totalWinnerAmount = winnerShares[i] + stakeReturn;
-                playerStakes[gameId][winner] = 0;
-                if (totalWinnerAmount > 0) {
-                    require(token.transfer(winner, totalWinnerAmount), "Winner transfer failed");
-                }
-                for (uint256 k = 0; k < uniqueCount; k++) {
-                    if (uniqueWinners[k] == winner) {
-                        delete winnerShares[k];
-                        break;
-                    }
-                }
+        for (uint256 i = 0; i < uniqueCount; i++) {
+            address winner = uniqueWinners[i];
+            uint256 stakeReturn = playerStakes[gameId][winner];
+            uint256 totalWinnerAmount = winnerShares[i] + stakeReturn;
+            playerStakes[gameId][winner] = 0;
+            if (totalWinnerAmount > 0) {
+                require(token.transfer(winner, totalWinnerAmount), "Winner transfer failed");
             }
         }
     }

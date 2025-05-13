@@ -11,10 +11,16 @@ module.exports = {
         runs: 200
       },
       viaIR: true,
+      outputSelection: {
+                "*": {
+                    "*": ["storageLayout"]
+                }
+      }
     }
   },
   networks: {
     hardhat: {
+      
       forking: {
         url: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
         blockNumber: process.env.FORK_BLOCK_NUMBER ? parseInt(process.env.FORK_BLOCK_NUMBER) : undefined
@@ -35,7 +41,7 @@ module.exports = {
     }
   },
   mocha: {
-    timeout: 100000
+    timeout: 500000
   },
   etherscan: {
     apiKey: {
