@@ -13,7 +13,7 @@ module.exports = {
       viaIR: true,
       outputSelection: {
                 "*": {
-                    "*": ["storageLayout"]
+                    "*": ["abi", "evm.bytecode", "evm.deployedBytecode", "storageLayout"]
                 }
       }
     }

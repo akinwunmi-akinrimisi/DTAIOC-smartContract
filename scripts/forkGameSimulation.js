@@ -2,7 +2,6 @@ const { ethers } = require("hardhat");
 require("dotenv").config();
 
 async function generateSignature(signer, messageHash) {
-  // Sign the raw messageHash without adding the Ethereum signed message prefix
   return await signer.signMessage(ethers.getBytes(messageHash));
 }
 
@@ -21,15 +20,14 @@ async function logBalances(token, addresses, label) {
 async function getGasPrices() {
   try {
     const feeData = await ethers.provider.getFeeData();
-    // Multiply fetched prices by 1.5x to ensure competitiveness
-    const maxFeePerGas = feeData.maxFeePerGas ? feeData.maxFeePerGas * 150n / 100n : ethers.parseUnits("100", "gwei");
-    const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ? feeData.maxPriorityFeePerGas * 150n / 100n : ethers.parseUnits("5", "gwei");
+    const maxFeePerGas = feeData.maxFeePerGas ? feeData.maxFeePerGas * 200n / 100n : ethers.parseUnits("150", "gwei");
+    const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ? feeData.maxPriorityFeePerGas * 200n / 100n : ethers.parseUnits("10", "gwei");
     return { maxFeePerGas, maxPriorityFeePerGas };
   } catch (error) {
     console.error("Failed to fetch gas prices, using defaults:", error.message);
     return {
-      maxFeePerGas: ethers.parseUnits("100", "gwei"),
-      maxPriorityFeePerGas: ethers.parseUnits("5", "gwei")
+      maxFeePerGas: ethers.parseUnits("150", "gwei"),
+      maxPriorityFeePerGas: ethers.parseUnits("10", "gwei")
     };
   }
 }
@@ -37,12 +35,10 @@ async function getGasPrices() {
 async function main() {
   console.log("Starting simulation on Base Sepolia network...");
 
-  // Validate environment variables
   if (!process.env.PRIVATE_KEY || !process.env.PRIVATE_KEY1 || !process.env.PRIVATE_KEY2) {
     throw new Error("Missing private keys in .env file. Required: PRIVATE_KEY, PRIVATE_KEY1, PRIVATE_KEY2");
   }
 
-  // Get signers using private keys
   let owner, player1, player2, backendSigner;
   try {
     console.log("Initializing signers...");
@@ -66,7 +62,6 @@ async function main() {
   console.log("Backend signer:", backendSigner.address);
   console.log("Platform address:", platformAddress);
 
-  // Check ETH balances
   console.log("\nChecking ETH balances...");
   for (const [name, signer] of Object.entries({ Owner: owner, Player1: player1, Player2: player2 })) {
     try {
@@ -81,17 +76,15 @@ async function main() {
     }
   }
 
-  // Deploy contracts
   console.log("\nDeploying contracts...");
   const gasPrices = await getGasPrices();
+  let ownerNonce = await owner.getNonce("pending");
 
-  // Deploy DTAIOCToken
   let token;
   try {
     console.log("Deploying DTAIOCToken...");
     const DTAIOCToken = await ethers.getContractFactory("DTAIOCToken", owner);
-    const nonce = await owner.getNonce();
-    token = await DTAIOCToken.deploy({ ...gasPrices, nonce });
+    token = await DTAIOCToken.deploy({ ...gasPrices, nonce: ownerNonce++ });
     await token.waitForDeployment();
     console.log("DTAIOCToken deployed to:", token.target);
   } catch (error) {
@@ -99,13 +92,11 @@ async function main() {
     throw error;
   }
 
-  // Deploy DTAIOCNFT
   let nft;
   try {
     console.log("Deploying DTAIOCNFT...");
     const DTAIOCNFT = await ethers.getContractFactory("DTAIOCNFT", owner);
-    const nonce = await owner.getNonce();
-    nft = await DTAIOCNFT.deploy({ ...gasPrices, nonce });
+    nft = await DTAIOCNFT.deploy({ ...gasPrices, nonce: ownerNonce++ });
     await nft.waitForDeployment();
     console.log("DTAIOCNFT deployed to:", nft.target);
   } catch (error) {
@@ -113,13 +104,11 @@ async function main() {
     throw error;
   }
 
-  // Deploy DTAIOCStaking
   let staking;
   try {
     console.log("Deploying DTAIOCStaking...");
     const DTAIOCStaking = await ethers.getContractFactory("DTAIOCStaking", owner);
-    const nonce = await owner.getNonce();
-    staking = await DTAIOCStaking.deploy(token.target, platformAddress, { ...gasPrices, nonce });
+    staking = await DTAIOCStaking.deploy(token.target, platformAddress, { ...gasPrices, nonce: ownerNonce++ });
     await staking.waitForDeployment();
     console.log("DTAIOCStaking deployed to:", staking.target);
   } catch (error) {
@@ -127,13 +116,11 @@ async function main() {
     throw error;
   }
 
-  // Deploy MockBasenameResolver
   let resolver;
   try {
     console.log("Deploying MockBasenameResolver...");
     const MockBasenameResolver = await ethers.getContractFactory("MockBasenameResolver", owner);
-    const nonce = await owner.getNonce();
-    resolver = await MockBasenameResolver.deploy({ ...gasPrices, nonce });
+    resolver = await MockBasenameResolver.deploy({ ...gasPrices, nonce: ownerNonce++ });
     await resolver.waitForDeployment();
     console.log("MockBasenameResolver deployed to:", resolver.target);
   } catch (error) {
@@ -141,12 +128,10 @@ async function main() {
     throw error;
   }
 
-  // Deploy DTAIOCGame
   let game;
   try {
     console.log("Deploying DTAIOCGame...");
     const DTAIOCGame = await ethers.getContractFactory("DTAIOCGame", owner);
-    const nonce = await owner.getNonce();
     game = await DTAIOCGame.deploy(
       token.target,
       nft.target,
@@ -154,7 +139,7 @@ async function main() {
       resolver.target,
       backendSigner.address,
       platformAddress,
-      { ...gasPrices, nonce }
+      { ...gasPrices, nonce: ownerNonce++ }
     );
     await game.waitForDeployment();
     console.log("DTAIOCGame deployed to:", game.target);
@@ -163,12 +148,10 @@ async function main() {
     throw error;
   }
 
-  // Configure contracts
   console.log("\nConfiguring contracts...");
   try {
     console.log("Setting game contract for NFT...");
-    const nonce = await owner.getNonce();
-    const nftTx = await nft.connect(owner).setGameContract(game.target, { gasLimit: 300000, ...gasPrices, nonce });
+    const nftTx = await nft.connect(owner).setGameContract(game.target, { gasLimit: 300000, ...gasPrices, nonce: ownerNonce++ });
     await nftTx.wait();
     console.log("Set game contract for NFT:", game.target);
   } catch (error) {
@@ -178,8 +161,7 @@ async function main() {
 
   try {
     console.log("Setting game contract for Staking...");
-    const nonce = await owner.getNonce();
-    const stakingTx = await staking.connect(owner).setGameContract(game.target, { gasLimit: 300000, ...gasPrices, nonce });
+    const stakingTx = await staking.connect(owner).setGameContract(game.target, { gasLimit: 300000, ...gasPrices, nonce: ownerNonce++ });
     await stakingTx.wait();
     console.log("Set game contract for Staking:", game.target);
   } catch (error) {
@@ -187,7 +169,6 @@ async function main() {
     throw error;
   }
 
-  // Verify backend signer
   try {
     console.log("Verifying backend signer...");
     const contractSigner = await game.backendSigner();
@@ -200,7 +181,6 @@ async function main() {
     throw error;
   }
 
-  // Log initial balances
   const addresses = {
     "Owner": owner.address,
     "Player1": player1.address,
@@ -210,7 +190,6 @@ async function main() {
   };
   await logBalances(token, addresses, "Initial Balances");
 
-  // Setup Basenames
   console.log("\nSetting up Basenames...");
   const basenames = {
     "owner": "creator.base.eth",
@@ -222,14 +201,14 @@ async function main() {
     const address = role === "owner" ? owner.address : role === "player1" ? player1.address : role === "player2" ? player2.address : null;
     try {
       console.log(`Setting resolved address for ${basename} to ${address}...`);
-      let nonce = await owner.getNonce();
-      const txResolved = await resolver.connect(owner).setResolvedAddress(node, address, { gasLimit: 300000, ...gasPrices, nonce });
+      let nonce = await owner.getNonce("pending");
+      const txResolved = await resolver.connect(owner).setResolvedAddress(node, address, { gasLimit: 300000, ...gasPrices, nonce: nonce++ });
       await txResolved.wait();
       console.log(`Setting basename ${basename} for ${address}...`);
-      nonce = await owner.getNonce();
-      const txBasename = await resolver.connect(owner).setBasename(address, basename, { gasLimit: 300000, ...gasPrices, nonce });
+      nonce = await owner.getNonce("pending");
+      const txBasename = await resolver.connect(owner).setBasename(address, basename, { gasLimit: 300000, ...gasPrices, nonce: nonce++ });
       await txBasename.wait();
-      const resolved = await resolver.resolve(node);
+      const resolved = await resolver["resolve(bytes32)"](node);
       console.log(`${basename} -> ${resolved}`);
       if (resolved.toLowerCase() !== address.toLowerCase()) {
         throw new Error(`Basename ${basename} resolves to ${resolved}, expected ${address}`);
@@ -240,7 +219,19 @@ async function main() {
     }
   }
 
-  // Create game
+  console.log("\nVerifying resolver mapping...");
+  try {
+    const creatorNode = ethers.keccak256(ethers.toUtf8Bytes("creator.base.eth"));
+    const resolvedAddress = await resolver["resolve(bytes32)"](creatorNode);
+    console.log(`creator.base.eth resolves to: ${resolvedAddress}`);
+    if (resolvedAddress.toLowerCase() !== owner.address.toLowerCase()) {
+      throw new Error(`Resolver mismatch: expected ${owner.address}, got ${resolvedAddress}`);
+    }
+  } catch (error) {
+    console.error("Failed to verify resolver:", error.message);
+    throw error;
+  }
+
   console.log("\nCreating game...");
   const creatorBasenameNode = ethers.keccak256(ethers.toUtf8Bytes("creator.base.eth"));
   const questionHashes = [
@@ -248,11 +239,11 @@ async function main() {
     ethers.keccak256(ethers.toUtf8Bytes("question2")),
     ethers.keccak256(ethers.toUtf8Bytes("question3")),
   ];
-  const gameDuration = 3600; // 1 hour
+  const gameDuration = 60;
   let gameId;
   try {
     console.log("Executing createGame...");
-    const nonce = await owner.getNonce();
+    const nonce = await owner.getNonce("pending");
     const txCreate = await game.connect(owner).createGame(creatorBasenameNode, questionHashes, gameDuration, { gasLimit: 500000, ...gasPrices, nonce });
     const createReceipt = await txCreate.wait();
     const gameCreatedEvent = createReceipt.logs
@@ -270,11 +261,10 @@ async function main() {
     gameId = gameCreatedEvent.args.gameId;
     console.log("Game created: ID", gameId.toString());
   } catch (error) {
-    console.error("Failed to create game:", error.message);
+    console.error("Failed to create game:", error);
     throw error;
   }
 
-  // Mint tokens and approve
   console.log("\nMinting and approving tokens...");
   const stakeAmount = ethers.parseEther("10");
   for (const [name, player] of [["Player1", player1], ["Player2", player2]]) {
@@ -283,12 +273,12 @@ async function main() {
       const balance = await token.balanceOf(player.address);
       if (balance < stakeAmount) {
         console.log(`Minting for ${name}...`);
-        const nonce = await player.getNonce();
+        const nonce = await player.getNonce("pending");
         const txMint = await token.connect(player).mint(stakeAmount, { gasLimit: 300000, ...gasPrices, nonce });
         await txMint.wait();
       }
       console.log(`Approving for ${name}...`);
-      const nonce = await player.getNonce();
+      const nonce = await player.getNonce("pending");
       const txApprove = await token.connect(player).approve(staking.target, stakeAmount, { gasLimit: 300000, ...gasPrices, nonce });
       await txApprove.wait();
     } catch (error) {
@@ -299,7 +289,6 @@ async function main() {
 
   await logBalances(token, addresses, "Balances After Mint/Approve");
 
-  // Players join game
   console.log("\nPlayers joining game...");
   for (const [name, player, basename] of [
     ["Player1", player1, "player1.base.eth"],
@@ -316,7 +305,7 @@ async function main() {
       const signature = await generateSignature(backendSigner, messageHash);
       console.log(`Signature for ${name}: ${signature}`);
       console.log(`Joining game for ${name}...`);
-      const nonce = await player.getNonce();
+      const nonce = await player.getNonce("pending");
       const txJoin = await game.connect(player).joinGame(gameId, basename, signature, { gasLimit: 1500000, ...gasPrices, nonce });
       await txJoin.wait();
       console.log(`${name} joined game`);
@@ -328,12 +317,11 @@ async function main() {
 
   await logBalances(token, addresses, "Balances After Joining");
 
-  // Stage 1: Submit answers
   console.log("\nSubmitting answers for Stage 1...");
   const answerHashes = Array(5).fill(ethers.keccak256(ethers.toUtf8Bytes("answer")));
   for (const [name, player, score] of [
-    ["Player1", player1, 5], // Perfect score, advances
-    ["Player2", player2, 3]  // Non-perfect, eliminated
+    ["Player1", player1, 5],
+    ["Player2", player2, 3]
   ]) {
     try {
       console.log(`Generating answer signature for ${name} in Stage 1...`);
@@ -345,7 +333,7 @@ async function main() {
       );
       const signature = await generateSignature(backendSigner, messageHash);
       console.log(`Submitting answers for ${name} in Stage 1...`);
-      const nonce = await player.getNonce();
+      const nonce = await player.getNonce("pending");
       const txSubmit = await game.connect(player).submitAnswers(gameId, 1, answerHashes, score, signature, { gasLimit: 1000000, ...gasPrices, nonce });
       await txSubmit.wait();
       console.log(`${name} submitted answers for Stage 1: Score ${score}`);
@@ -357,11 +345,10 @@ async function main() {
 
   await logBalances(token, addresses, "Balances After Stage 1");
 
-  // Advance to stage 2
   console.log("\nAdvancing to stage 2...");
   try {
     console.log("Executing advanceStage...");
-    const nonce = await owner.getNonce();
+    const nonce = await owner.getNonce("pending");
     const advanceTx = await game.connect(owner).advanceStage(gameId, { gasLimit: 500000, ...gasPrices, nonce });
     await advanceTx.wait();
     console.log("Advanced to stage 2");
@@ -370,7 +357,6 @@ async function main() {
     throw error;
   }
 
-  // Stage 2: Submit answers (only Player1, as Player2 was eliminated)
   console.log("\nSubmitting answers for Stage 2...");
   try {
     console.log("Generating answer signature for Player1 in Stage 2...");
@@ -382,7 +368,7 @@ async function main() {
     );
     const signature = await generateSignature(backendSigner, messageHash);
     console.log("Submitting answers for Player1 in Stage 2...");
-    const nonce = await player1.getNonce();
+    const nonce = await player1.getNonce("pending");
     const txSubmit = await game.connect(player1).submitAnswers(gameId, 2, answerHashes, 5, signature, { gasLimit: 1000000, ...gasPrices, nonce });
     await txSubmit.wait();
     console.log("Player1 submitted answers for Stage 2: Score 5");
@@ -393,11 +379,10 @@ async function main() {
 
   await logBalances(token, addresses, "Balances After Stage 2");
 
-  // Advance to stage 3
   console.log("\nAdvancing to stage 3...");
   try {
     console.log("Executing advanceStage...");
-    const nonce = await owner.getNonce();
+    const nonce = await owner.getNonce("pending");
     const advanceTx = await game.connect(owner).advanceStage(gameId, { gasLimit: 500000, ...gasPrices, nonce });
     await advanceTx.wait();
     console.log("Advanced to stage 3");
@@ -406,7 +391,6 @@ async function main() {
     throw error;
   }
 
-  // Stage 3: Submit answers (only Player1)
   console.log("\nSubmitting answers for Stage 3...");
   try {
     console.log("Generating answer signature for Player1 in Stage 3...");
@@ -418,7 +402,7 @@ async function main() {
     );
     const signature = await generateSignature(backendSigner, messageHash);
     console.log("Submitting answers for Player1 in Stage 3...");
-    const nonce = await player1.getNonce();
+    const nonce = await player1.getNonce("pending");
     const txSubmit = await game.connect(player1).submitAnswers(gameId, 3, answerHashes, 5, signature, { gasLimit: 1000000, ...gasPrices, nonce });
     await txSubmit.wait();
     console.log("Player1 submitted answers for Stage 3: Score 5");
@@ -429,15 +413,13 @@ async function main() {
 
   await logBalances(token, addresses, "Balances After Stage 3");
 
-  // End game
   console.log("\nEnding game...");
   try {
-    console.log("Increasing EVM time...");
-    await ethers.provider.send("evm_increaseTime", [gameDuration + 1]);
-    await ethers.provider.send("evm_mine", []);
-    console.log("Executing endGame...");
-    const nonce = await owner.getNonce();
-    const endTx = await game.connect(owner).endGame(gameId, { gasLimit: 1500000, ...gasPrices, nonce });
+    console.log("Waiting for game duration to pass...");
+    await new Promise((resolve) => setTimeout(resolve, gameDuration * 1000));
+    console.log("Executing autoEndGame...");
+    const nonce = await owner.getNonce("pending");
+    const endTx = await game.connect(owner).autoEndGame(gameId, { gasLimit: 1500000, ...gasPrices, nonce });
     const endReceipt = await endTx.wait();
     console.log("Game ended");
   } catch (error) {
@@ -445,10 +427,8 @@ async function main() {
     throw error;
   }
 
-  // Check final balances
   await logBalances(token, addresses, "Final Balances");
 
-  // Check NFTs
   console.log("\nNFT ownership:");
   for (let tokenId = 1; tokenId <= 3; tokenId++) {
     try {

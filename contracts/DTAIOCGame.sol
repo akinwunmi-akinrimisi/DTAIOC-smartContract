@@ -141,7 +141,12 @@ contract DTAIOCGame is Ownable, ReentrancyGuard {
         require(!game.ended, "Game has ended");
         require(block.timestamp <= game.startTime + game.gameDuration, "Game duration exceeded");
         bytes32 gameSlot = keccak256(abi.encodePacked(gameId));
-        bytes32 playerCountSlot = bytes32(uint256(gameSlot) + 5);
+        bytes32 playerCountSlot = bytes32(uint256(gameSlot) + 14);
+        bytes32 slotValue;
+        assembly {
+            slotValue := sload(playerCountSlot)
+        }
+        console.log("Raw playerCount slot value: %s", uint256(slotValue));
         console.log("Player count: %s, Limit: %s", game.playerCount, PLAYER_LIMIT);
         require(game.playerCount < PLAYER_LIMIT, "Player limit reached");
         require(!game.participated[msg.sender], "Player already joined");

@@ -1122,9 +1122,9 @@ describe("DTAIOCGame", function () {
       it("Should revert joining when player limit is reached", async function () {
           const signature = await generateJoinSignature(backendSigner, player2.address, player2Basename, gameId);
 
-          // Set playerCount to 100 (PLAYER_LIMIT) at slot gamesData[gameId] + 4
+          // Set playerCount to 100 (PLAYER_LIMIT) at slot gamesData[gameId] + 14
           const gameSlot = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [gameId]));
-          const playerCountSlot = `0x${(BigInt(gameSlot) + 4n).toString(16).padStart(64, '0')}`;
+          const playerCountSlot = `0x${(BigInt(gameSlot) + 14n).toString(16).padStart(64, '0')}`;
           console.log("Setting playerCount slot:", playerCountSlot);
           await ethers.provider.send("hardhat_setStorageAt", [
               game.target,
@@ -1139,6 +1139,10 @@ describe("DTAIOCGame", function () {
           ).to.be.revertedWith("Player limit reached");
       });
   });
+
+
+
+
 
 
   describe("Backend Signer", function () {
