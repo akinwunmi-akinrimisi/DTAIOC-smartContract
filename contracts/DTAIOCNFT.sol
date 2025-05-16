@@ -12,11 +12,12 @@ contract DTAIOCNFT is ERC721URIStorage, Ownable {
     error UnauthorizedCaller();
 
     // Immutable state variables
-    address public immutable gameContract;
+    address public gameContract; // Changed to mutable for setGameContract
     uint256 private _tokenIdCounter;
 
     // Events
     event NFTMinted(uint256 indexed tokenId, address indexed recipient, uint256 gameId, uint256 rank, string tokenURI);
+    event GameContractUpdated(address indexed newGameContract);
 
     constructor(address _gameContract) ERC721("DTriviaAIOnChain NFT", "DTAIOCNFT") Ownable(msg.sender) {
         if (_gameContract == address(0)) revert InvalidAddress();
@@ -27,6 +28,12 @@ contract DTAIOCNFT is ERC721URIStorage, Ownable {
     modifier onlyGameContract() {
         if (msg.sender != gameContract) revert UnauthorizedCaller();
         _;
+    }
+
+    function setGameContract(address _gameContract) external onlyOwner {
+        if (_gameContract == address(0)) revert InvalidAddress();
+        gameContract = _gameContract;
+        emit GameContractUpdated(_gameContract);
     }
 
     function mintNFT(address recipient, uint256 gameId, uint256 rank, string memory tokenURI)

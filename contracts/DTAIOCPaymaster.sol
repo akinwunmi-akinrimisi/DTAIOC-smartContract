@@ -5,9 +5,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./IBasenameResolver.sol";
 import "./BasePaymaster.sol";
+import "./IEntryPoint.sol";
 import "./MockSmartWallet.sol";
 
-// Minimal interface for DTAIOCGame to fetch function selectors
 interface IDTAIOCGame {
     function createGame(
         string memory basename,
@@ -35,16 +35,13 @@ interface IDTAIOCGame {
     function mint(uint256 tokenId) external;
 }
 
-// Interface for MockSmartWallet signature validation
 interface IMockSmartWallet {
     function verifySignature(bytes32 hash, bytes memory signature) external view returns (bool);
 }
 
 contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
-    // Custom errors for gas efficiency
     error InvalidAddress();
     error PaymasterPaused();
-    error InvalidEntryPointCaller();
     error InvalidCallData();
     error InvalidInnerCallData();
     error InvalidTargetContract();
@@ -57,7 +54,6 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
     error InvalidSignature();
     error InsufficientData(string action);
 
-    // Mutable state variables
     address public platformAddress;
     address public tokenContract;
     address public stakingContract;
@@ -66,10 +62,8 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
     IBasenameResolver public immutable basenameResolver;
     bool public paused;
 
-    // Mapping to track sponsored operations
     mapping(address => uint256) public sponsoredUserOps;
 
-    // Events
     event UserOpSponsored(address indexed sender, bytes32 indexed userOpHash, string action);
     event Deposited(address indexed sender, uint256 amount);
     event Withdrawn(address indexed recipient, uint256 amount);
@@ -93,26 +87,18 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
         paused = false;
     }
 
-    // Deposit funds to EntryPoint
     function deposit() external payable nonReentrant {
         if (msg.value == 0) revert InsufficientDeposit();
         entryPoint.depositTo{value: msg.value}(address(this));
         emit Deposited(msg.sender, msg.value);
     }
 
-    // Withdraw funds to platformAddress
     function withdraw(uint256 amount) external onlyOwner nonReentrant {
         if (amount > address(this).balance) revert InsufficientDeposit();
         (bool success, ) = platformAddress.call{value: amount}("");
         if (!success) revert WithdrawalFailed();
         emit Withdrawn(platformAddress, amount);
     }
-
-    // Setters with validation
-    // function setGameContract(address _gameContract) external onlyOwner {
-    //     if (_gameContract == address(0)) revert InvalidAddress();
-    //     gameContract = IDTAIOCGame(_gameContract);
-    // }
 
     function setTokenContract(address _tokenContract) external onlyOwner {
         if (_tokenContract == address(0)) revert InvalidAddress();
@@ -129,7 +115,6 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
         nftContract = _nftContract;
     }
 
-    // Pause and unpause functions
     function pause() external onlyOwner {
         paused = true;
         emit Paused();
@@ -140,22 +125,19 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
         emit Unpaused();
     }
 
-    // ERC-4337 validatePaymasterUserOp
     function validatePaymasterUserOp(
         UserOperation calldata userOp,
-        bytes32 userOpHash,
-        uint256 /* maxCost */
-    ) external override returns (bytes memory context, uint256 validationData) {
+        bytes32 userOpHash
+        // uint256 maxCost // Unused, commented out
+    ) external virtual override returns (bytes memory context, uint256 validationData) {
         if (msg.sender != address(entryPoint)) revert InvalidEntryPointCaller();
         if (paused) revert PaymasterPaused();
 
-        // Validate UserOperation signature
         if (!IMockSmartWallet(userOp.sender).verifySignature(userOpHash, userOp.signature)) {
             emit ValidationFailed(userOp.sender, "Invalid UserOperation signature");
             revert InvalidSignature();
         }
 
-        // Extract target and inner call data
         address target;
         bytes4 functionSelector;
         bytes memory innerCallData;
@@ -172,7 +154,6 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
                 emit ValidationFailed(userOp.sender, "innerCallData too short for selector");
                 revert InvalidInnerCallData();
             }
-            // Extract selector manually
             functionSelector = bytes4(
                 bytes.concat(
                     innerCallData[0],
@@ -186,7 +167,6 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
             innerCallData = userOp.callData;
         }
 
-        // Validate target contract
         bool isValidContract = target == address(gameContract) ||
                               target == tokenContract ||
                               target == stakingContract ||
@@ -196,14 +176,12 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
             revert InvalidTargetContract();
         }
 
-        // Validate user actions using dynamic selectors
         bool isUserAction = functionSelector == gameContract.createGame.selector ||
                             functionSelector == gameContract.joinGame.selector ||
                             functionSelector == gameContract.submitAnswers.selector ||
                             functionSelector == gameContract.mint.selector;
         if (isUserAction) {
-            // Fetch basename and Twitter username
-            string memory resolvedBasename = basenameResolver.resolve(userOp.sender);
+            string memory resolvedBasename = basenameResolver.getBasename(userOp.sender);
             string memory resolvedTwitter = basenameResolver.getTwitterUsername(userOp.sender);
             bool hasBasename = bytes(resolvedBasename).length != 0;
             bool hasTwitter = bytes(resolvedTwitter).length != 0;
@@ -212,13 +190,11 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
                 revert NoRegisteredIdentifier();
             }
 
-            // Validate parameters for createGame and joinGame
             if (functionSelector == gameContract.createGame.selector) {
                 if (innerCallData.length < 4 + 32 + 32 + 96 + 32 + 32) {
                     emit ValidationFailed(userOp.sender, "Insufficient data for createGame");
                     revert InsufficientData("createGame");
                 }
-                // Copy bytes from offset 4 for decoding
                 bytes memory decodeData = new bytes(innerCallData.length - 4);
                 for (uint256 i = 0; i < decodeData.length; i++) {
                     decodeData[i] = innerCallData[i + 4];
@@ -231,12 +207,11 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
                     emit ValidationFailed(userOp.sender, "Insufficient data for joinGame");
                     revert InsufficientData("joinGame");
                 }
-                // Copy bytes from offset 4 for decoding
                 bytes memory decodeData = new bytes(innerCallData.length - 4);
                 for (uint256 i = 0; i < decodeData.length; i++) {
                     decodeData[i] = innerCallData[i + 4];
                 }
-                (uint256 gameId, string memory basename, string memory twitterUsername,) = 
+                (, string memory basename, string memory twitterUsername,) = 
                     abi.decode(decodeData, (uint256, string, string, bytes));
                 _validateIdentifier(userOp.sender, basename, twitterUsername, resolvedBasename, resolvedTwitter);
             }
@@ -244,26 +219,26 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
 
         context = abi.encode(userOp.sender, userOpHash, functionSelector);
         validationData = _packValidationData(false, uint48(block.timestamp + 1 hours), 0);
+        emit PaymasterValidated(userOp.sender, userOpHash, validationData);
         return (context, validationData);
     }
 
-    // ERC-4337 postOp
     function postOp(
-        uint8 /* mode */,
-        bytes calldata context,
-        uint256 /* actualGasCost */
-    ) external {
+        uint8 mode
+        // bytes calldata context, // Unused, commented out
+        // uint256 actualGasCost // Unused, commented out
+    ) external virtual override {
         if (msg.sender != address(entryPoint)) revert InvalidEntryPointCaller();
         if (paused) revert PaymasterPaused();
 
-        (address sender, bytes32 userOpHash, bytes4 functionSelector) = 
-            abi.decode(context, (address, bytes32, bytes4));
-        sponsoredUserOps[sender]++;
-        string memory action = _getActionName(functionSelector);
-        emit UserOpSponsored(sender, userOpHash, action);
+        // (address sender, bytes32 userOpHash, bytes4 functionSelector) = 
+        //     abi.decode(context, (address, bytes32, bytes4));
+        // sponsoredUserOps[sender]++;
+        // string memory action = _getActionName(functionSelector);
+        // emit UserOpSponsored(sender, userOpHash, action);
+        emit PaymasterPostOpCalled(address(0), bytes32(0), mode);
     }
 
-    // Internal function to validate basename or Twitter username
     function _validateIdentifier(
         address sender,
         string memory providedBasename,
@@ -302,16 +277,14 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
         }
     }
 
-    // Pack validation data for ERC-4337
     function _packValidationData(
         bool sigFailed,
         uint48 validUntil,
         uint48 validAfter
-    ) internal pure returns (uint256) {
+    ) internal virtual override pure returns (uint256) {
         return (sigFailed ? 1 : 0) | (uint256(validUntil) << 160) | (uint256(validAfter) << (160 + 48));
     }
 
-    // Get action name for logging
     function _getActionName(bytes4 selector) private view returns (string memory) {
         if (selector == gameContract.createGame.selector) return "createGame";
         if (selector == gameContract.joinGame.selector) return "joinGame";
@@ -320,8 +293,7 @@ contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
         return "unknown";
     }
 
-    // Receive ETH deposits
-    receive() external payable {
+    receive() external payable override {
         emit Deposited(msg.sender, msg.value);
     }
 }
