@@ -2,314 +2,225 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 describe("DTAIOCPaymaster", function () {
-  let DTAIOCPaymaster, paymaster, owner, addr1, addr2;
-  let entryPoint, dtaiocToken, dtaiocGame, basenameResolver;
-  let mockResolver, mockEntryPoint;
-  const platformAddress = "0x37706dAb5DA56EcCa562f4f26478d1C484f0A7fB";
+  let paymaster, entryPoint, basenameResolver, platform, user, gameContract, tokenContract, nftContract, stakingContract, wallet, backendSigner;
 
   beforeEach(async function () {
-    [owner, addr1, addr2] = await ethers.getSigners();
+    [platform, user, backendSigner] = await ethers.getSigners();
+    console.log("Platform address:", platform.address);
+    console.log("User address:", user.address);
+    console.log("Backend signer address:", backendSigner.address);
 
-    // Deploy mock contracts
-    const MockResolverFactory = await ethers.getContractFactory("MockBasenameResolver");
-    mockResolver = await MockResolverFactory.deploy();
-    await mockResolver.waitForDeployment();
+    // Deploy MockBasenameResolver
+    const BasenameResolver = await ethers.getContractFactory("MockBasenameResolver");
+    basenameResolver = await BasenameResolver.deploy();
+    await basenameResolver.waitForDeployment();
+    console.log("MockBasenameResolver deployed to:", basenameResolver.target);
 
-    const MockEntryPointFactory = await ethers.getContractFactory("MockEntryPoint");
-    mockEntryPoint = await MockEntryPointFactory.deploy();
-    await mockEntryPoint.waitForDeployment();
+    // Deploy MockEntryPoint
+    const EntryPoint = await ethers.getContractFactory("MockEntryPoint");
+    entryPoint = await EntryPoint.deploy();
+    await entryPoint.waitForDeployment();
+    console.log("MockEntryPoint deployed to:", entryPoint.target);
 
     // Deploy DTAIOCToken
-    const DTAIOCTokenFactory = await ethers.getContractFactory("DTAIOCToken");
-    dtaiocToken = await DTAIOCTokenFactory.deploy();
-    await dtaiocToken.waitForDeployment();
+    const Token = await ethers.getContractFactory("DTAIOCToken");
+    tokenContract = await Token.deploy();
+    await tokenContract.waitForDeployment();
+    console.log("DTAIOCToken deployed to:", tokenContract.target);
 
     // Deploy DTAIOCNFT
-    const DTAIOCNFTFactory = await ethers.getContractFactory("DTAIOCNFT");
-    const dtaiocNFT = await DTAIOCNFTFactory.deploy();
-    await dtaiocNFT.waitForDeployment();
+    const NFT = await ethers.getContractFactory("DTAIOCNFT");
+    nftContract = await NFT.deploy();
+    await nftContract.waitForDeployment();
+    console.log("DTAIOCNFT deployed to:", nftContract.target);
 
-    // Deploy DTAIOCStaking with correct constructor arguments
-    const DTAIOCStakingFactory = await ethers.getContractFactory("DTAIOCStaking");
-    const dtaiocStaking = await DTAIOCStakingFactory.deploy(dtaiocToken.target, platformAddress);
-    await dtaiocStaking.waitForDeployment();
+    // Deploy DTAIOCStaking
+    const Staking = await ethers.getContractFactory("DTAIOCStaking");
+    stakingContract = await Staking.deploy(tokenContract.target, platform.address);
+    await stakingContract.waitForDeployment();
+    console.log("DTAIOCStaking deployed to:", stakingContract.target);
 
     // Deploy DTAIOCGame
-    const DTAIOCGameFactory = await ethers.getContractFactory("DTAIOCGame");
-    const backendSigner = addr1.address; // Temporary for testing
-    dtaiocGame = await DTAIOCGameFactory.deploy(
-      dtaiocToken.target,
-      dtaiocNFT.target,
-      dtaiocStaking.target,
-      mockResolver.target,
-      backendSigner
+    const Game = await ethers.getContractFactory("DTAIOCGame");
+    gameContract = await Game.deploy(
+      tokenContract.target,
+      nftContract.target,
+      stakingContract.target,
+      basenameResolver.target,
+      backendSigner.address,
+      platform.address
     );
-    await dtaiocGame.waitForDeployment();
+    await gameContract.waitForDeployment();
+    console.log("DTAIOCGame deployed to:", gameContract.target);
 
-    // Set mock addresses
-    entryPoint = mockEntryPoint.target;
-    basenameResolver = mockResolver.target;
+    // Deploy MockSmartWallet
+    const Wallet = await ethers.getContractFactory("MockSmartWallet");
+    wallet = await Wallet.deploy(user.address);
+    await wallet.waitForDeployment();
+    console.log("MockSmartWallet deployed to:", wallet.target);
 
-    // Deploy Paymaster
-    const DTAIOCPaymasterFactory = await ethers.getContractFactory("DTAIOCPaymaster");
-    paymaster = await DTAIOCPaymasterFactory.deploy(
-      entryPoint,
-      dtaiocToken.target,
-      dtaiocGame.target,
-      basenameResolver
+    // Set Basename for wallet
+    await basenameResolver.setBasename(wallet.target, "user.base.eth");
+    console.log("Basename for wallet:", await basenameResolver["resolve(address)"](wallet.target));
+
+    // Deploy DTAIOCPaymaster
+    const Paymaster = await ethers.getContractFactory("DTAIOCPaymaster");
+    paymaster = await Paymaster.deploy(
+      entryPoint.target,
+      platform.address,
+      gameContract.target,
+      basenameResolver.target
     );
     await paymaster.waitForDeployment();
+    console.log("DTAIOCPaymaster deployed to:", paymaster.target);
 
-    // Fund mock EntryPoint for Paymaster
-    await mockEntryPoint.setBalance(paymaster.target, ethers.parseEther("0.1"));
+    // Set contract addresses
+    await paymaster.setTokenContract(tokenContract.target);
+    await paymaster.setStakingContract(stakingContract.target);
+    await paymaster.setNFTContract(nftContract.target);
+
+    // Fund Paymaster
+    await platform.sendTransaction({ to: paymaster.target, value: ethers.parseEther("1") });
+    await paymaster.deposit({ value: ethers.parseEther("1") });
+    console.log("Paymaster funded with 1 ETH");
+
+    // Set up game
+    await nftContract.setGameContract(gameContract.target);
+    await stakingContract.setGameContract(gameContract.target);
+    const questionHashes = [
+      ethers.keccak256(ethers.toUtf8Bytes("question1")),
+      ethers.keccak256(ethers.toUtf8Bytes("question2")),
+      ethers.keccak256(ethers.toUtf8Bytes("question3")),
+    ];
+    const tx = await gameContract.connect(platform).createGame("user.base.eth", "", questionHashes, 3600, "0x");
+    const receipt = await tx.wait();
+    console.log("Game created with ID:", receipt.logs
+      .map((log) => gameContract.interface.parseLog(log))
+      .find((e) => e?.name === "GameCreated")?.args.gameId);
   });
 
-  describe("Initialization", function () {
-    it("should initialize with correct addresses", async function () {
-      expect(await paymaster.entryPoint()).to.equal(entryPoint);
-      expect(await paymaster.dtaiocToken()).to.equal(dtaiocToken.target);
-      expect(await paymaster.dtaiocGame()).to.equal(dtaiocGame.target);
-      expect(await paymaster.basenameResolver()).to.equal(basenameResolver);
-      expect(await paymaster.owner()).to.equal(owner.address);
-    });
+  it("should validate UserOp for joinGame with valid Basename", async function () {
+    // Mint and approve tokens for wallet
+    await tokenContract.connect(user).mint(ethers.parseEther("10"));
+    await tokenContract.connect(user).approve(stakingContract.target, ethers.parseEther("10"));
 
-    it("should set default gas limits and paused state", async function () {
-      expect(await paymaster.maxGasLimit()).to.equal(200_000);
-      expect(await paymaster.maxGasPrice()).to.equal(100 * 10**9);
-      expect(await paymaster.isPaused()).to.equal(false);
-    });
+    const messageHash = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "string", "uint256"],
+        [wallet.target, "user.base.eth", 1]
+      )
+    );
+    const signature = await backendSigner.signMessage(ethers.getBytes(messageHash));
+    const joinGameData = gameContract.interface.encodeFunctionData("joinGame", [1, "user.base.eth", "", signature]);
+    const userOp = {
+      sender: wallet.target,
+      nonce: 0,
+      initCode: "0x",
+      callData: wallet.interface.encodeFunctionData("execute", [gameContract.target, joinGameData]),
+      callGasLimit: 200000,
+      verificationGasLimit: 100000,
+      preVerificationGas: 21000,
+      maxFeePerGas: 1000000000,
+      maxPriorityFeePerGas: 1000000000,
+      paymasterAndData: ethers.concat([paymaster.target, "0x"]),
+      signature: "0x"
+    };
 
-    it("should revert if initialized with zero addresses", async function () {
-      const DTAIOCPaymasterFactory = await ethers.getContractFactory("DTAIOCPaymaster");
-      await expect(
-        DTAIOCPaymasterFactory.deploy(
-          ethers.ZeroAddress,
-          dtaiocToken.target,
-          dtaiocGame.target,
-          basenameResolver
-        )
-      ).to.be.revertedWith("Invalid EntryPoint");
-    });
+    console.log("userOp.callData:", userOp.callData);
+    const userOpHash = ethers.keccak256("0x1234"); // Mock hash
+    console.log("Calling validatePaymasterUserOp for wallet:", wallet.target);
+    const [context, validationData] = await entryPoint.validatePaymasterUserOp(
+      paymaster.target,
+      userOp,
+      userOpHash,
+      0
+    );
+
+    // Decode validationData
+    const sigFailed = (validationData & 1) === 1;
+    const validUntil = Number((validationData >> 160) & ((1n << 48n) - 1n));
+    const validAfter = Number((validationData >> (160 + 48)) & ((1n << 48n) - 1n));
+
+    expect(context).to.equal(ethers.AbiCoder.defaultAbiCoder().encode(["address"], [wallet.target]));
+    expect(sigFailed).to.equal(false);
+    expect(validUntil).to.be.gt(Math.floor(Date.now() / 1000));
+    expect(validAfter).to.equal(0);
+    expect(await paymaster.sponsoredUserOps(wallet.target)).to.equal(0);
+
+    // Simulate postOp
+    console.log("Calling postOp for wallet:", wallet.target);
+    await entryPoint.postOp(paymaster.target, 0, context, 100000);
+    expect(await paymaster.sponsoredUserOps(wallet.target)).to.equal(1);
   });
 
-  describe("Core Logic", function () {
-    it("should validate valid mint UserOp", async function () {
-      await mockResolver.setBasename(addr1.address, "user.base.eth");
+  it("should reject UserOp with invalid Basename", async function () {
+    const joinGameData = gameContract.interface.encodeFunctionData("joinGame", [1, "invalid.base.eth", "", "0x"]);
+    const userOp = {
+      sender: wallet.target,
+      nonce: 0,
+      initCode: "0x",
+      callData: wallet.interface.encodeFunctionData("execute", [gameContract.target, joinGameData]),
+      callGasLimit: 200000,
+      verificationGasLimit: 100000,
+      preVerificationGas: 21000,
+      maxFeePerGas: 1000000000,
+      maxPriorityFeePerGas: 1000000000,
+      paymasterAndData: ethers.concat([paymaster.target, "0x"]),
+      signature: "0x"
+    };
 
-      // Encode callData to call dtaiocToken.mint(uint256)
-      const tokenInterface = new ethers.Interface(["function mint(uint256 amount)"]);
-      const callData = tokenInterface.encodeFunctionData("mint", [1]);
-
-      const userOp = {
-        sender: addr1.address,
-        nonce: 0,
-        callData: callData,
-        callGasLimit: 100_000,
-        verificationGasLimit: 50_000,
-        preVerificationGas: 20_000,
-        maxFeePerGas: 50 * 10**9,
-        maxPriorityFeePerGas: 10 * 10**9,
-        paymasterAndData: ethers.AbiCoder.defaultAbiCoder().encode(
-          ["address", "uint256"],
-          [dtaiocToken.target, 0]
-        )
-      };
-
-      const userOpHash = ethers.randomBytes(32);
-      const maxCost = ethers.parseEther("0.01");
-
-      try {
-        const result = await mockEntryPoint.validatePaymasterUserOp.staticCall(
-          paymaster.target,
-          userOp,
-          userOpHash,
-          maxCost,
-          { gasLimit: 500_000 }
-        );
-        console.log("validatePaymasterUserOp result:", result);
-        const [context, validUntil, validAfter] = result;
-        expect(context).to.not.equal("0x");
-        expect(validUntil).to.be.gt(0);
-        expect(validAfter).to.equal(0);
-        expect(await paymaster.nonces(addr1.address)).to.equal(0); // Nonce not incremented in staticCall
-        expect(await paymaster.lastSponsoredTime(addr1.address)).to.equal(0); // Not updated in staticCall
-      } catch (error) {
-        console.error("validatePaymasterUserOp failed:", error);
-        throw error;
-      }
-    });
-
-    it("should reject invalid Basename", async function () {
-      // Encode callData to call dtaiocToken.mint(uint256)
-      const tokenInterface = new ethers.Interface(["function mint(uint256 amount)"]);
-      const callData = tokenInterface.encodeFunctionData("mint", [1]);
-
-      const userOp = {
-        sender: addr1.address,
-        nonce: 0,
-        callData: callData,
-        callGasLimit: 100_000,
-        verificationGasLimit: 50_000,
-        preVerificationGas: 20_000,
-        maxFeePerGas: 50 * 10**9,
-        maxPriorityFeePerGas: 10 * 10**9,
-        paymasterAndData: ethers.AbiCoder.defaultAbiCoder().encode(
-          ["address", "uint256"],
-          [dtaiocToken.target, 0]
-        )
-      };
-
-      const userOpHash = ethers.randomBytes(32);
-      const maxCost = ethers.parseEther("0.01");
-
-      await expect(
-        mockEntryPoint.validatePaymasterUserOp.staticCall(paymaster.target, userOp, userOpHash, maxCost, {
-          gasLimit: 500_000
-        })
-      ).to.be.revertedWith("Paymaster call failed: InvalidBasename");
-    });
+    console.log("userOp.callData:", userOp.callData);
+    const userOpHash = ethers.keccak256("0x1234");
+    await expect(
+      entryPoint.validatePaymasterUserOp(paymaster.target, userOp, userOpHash, 0)
+    ).to.be.revertedWith("Basename mismatch");
   });
 
-  describe("Fund Management", function () {
-    it("should accept direct ETH deposits", async function () {
-      const depositAmount = ethers.parseEther("0.1");
-      await owner.sendTransaction({ to: paymaster.target, value: depositAmount });
-      expect(await ethers.provider.getBalance(paymaster.target)).to.equal(depositAmount);
-      await expect(owner.sendTransaction({ to: paymaster.target, value: depositAmount }))
-        .to.emit(paymaster, "DepositReceived")
-        .withArgs(owner.address, depositAmount);
-    });
+  it("should reject UserOp when paused", async function () {
+    await paymaster.pause();
+    const joinGameData = gameContract.interface.encodeFunctionData("joinGame", [1, "user.base.eth", "", "0x"]);
+    const userOp = {
+      sender: wallet.target,
+      nonce: 0,
+      initCode: "0x",
+      callData: wallet.interface.encodeFunctionData("execute", [gameContract.target, joinGameData]),
+      callGasLimit: 200000,
+      verificationGasLimit: 100000,
+      preVerificationGas: 21000,
+      maxFeePerGas: 1000000000,
+      maxPriorityFeePerGas: 1000000000,
+      paymasterAndData: ethers.concat([paymaster.target, "0x"]),
+      signature: "0x"
+    };
 
-    it("should allow owner to withdraw ETH", async function () {
-      const depositAmount = ethers.parseEther("0.1");
-      await owner.sendTransaction({ to: paymaster.target, value: depositAmount });
-
-      const withdrawAmount = ethers.parseEther("0.05");
-      await expect(paymaster.withdraw(owner.address, withdrawAmount))
-        .to.emit(paymaster, "EthWithdrawn")
-        .withArgs(owner.address, withdrawAmount);
-      expect(await ethers.provider.getBalance(paymaster.target)).to.equal(depositAmount - withdrawAmount);
-    });
-
-    it("should enforce withdrawal limit", async function () {
-      const depositAmount = ethers.parseEther("2");
-      await owner.sendTransaction({ to: paymaster.target, value: depositAmount });
-
-      const overLimit = ethers.parseEther("1.5");
-      await expect(paymaster.withdraw(owner.address, overLimit)).to.be.revertedWith("WithdrawalLimitExceeded");
-
-      const withinLimit = ethers.parseEther("0.5");
-      await paymaster.withdraw(owner.address, withinLimit);
-      expect(await ethers.provider.getBalance(paymaster.target)).to.equal(depositAmount - withinLimit);
-    });
+    console.log("userOp.callData:", userOp.callData);
+    const userOpHash = ethers.keccak256("0x1234");
+    await expect(
+      entryPoint.validatePaymasterUserOp(paymaster.target, userOp, userOpHash, 0)
+    ).to.be.revertedWith("Paymaster paused");
   });
 
-  describe("Admin Functions", function () {
-    it("should allow owner to pause and unpause", async function () {
-      await expect(paymaster.pause()).to.emit(paymaster, "Paused");
-      expect(await paymaster.isPaused()).to.equal(true);
+  it("should allow deposit and withdraw", async function () {
+    const initialBalance = await ethers.provider.getBalance(paymaster.target);
+    await platform.sendTransaction({ to: paymaster.target, value: ethers.parseEther("0.5") });
+    expect(await ethers.provider.getBalance(paymaster.target)).to.equal(initialBalance + ethers.parseEther("0.5"));
 
-      await expect(paymaster.unpause()).to.emit(paymaster, "Unpaused");
-      expect(await paymaster.isPaused()).to.equal(false);
-    });
+    await paymaster.withdraw(ethers.parseEther("0.3"));
+    expect(await ethers.provider.getBalance(paymaster.target)).to.equal(initialBalance + ethers.parseEther("0.2"));
+  });
 
-    it("should prevent non-owner from pausing", async function () {
-      await expect(paymaster.connect(addr1).pause())
-        .to.be.revertedWithCustomError(paymaster, "OwnableUnauthorizedAccount")
-        .withArgs(addr1.address);
-    });
-
-    it("should update Basename resolver", async function () {
-      const newResolver = addr2.address;
-      await expect(paymaster.setBasenameResolver(newResolver))
-        .to.emit(paymaster, "ResolverUpdated")
-        .withArgs(newResolver);
-      expect(await paymaster.basenameResolver()).to.equal(newResolver);
-    });
-
-    it("should set gas limit and price", async function () {
-      await expect(paymaster.setMaxGasLimit(300_000))
-        .to.emit(paymaster, "ConfigChanged")
-        .withArgs("maxGasLimit", 300_000);
-      expect(await paymaster.maxGasLimit()).to.equal(300_000);
-
-      await expect(paymaster.setMaxGasPrice(200 * 10**9))
-        .to.emit(paymaster, "ConfigChanged")
-        .withArgs("maxGasPrice", 200 * 10**9);
-      expect(await paymaster.maxGasPrice()).to.equal(200 * 10**9);
-    });
-
-    it("should adjust gas limit based on average", async function () {
-      await mockResolver.setBasename(addr1.address, "user.base.eth");
-
-      // Encode callData to call dtaiocToken.mint(uint256)
-      const tokenInterface = new ethers.Interface(["function mint(uint256 amount)"]);
-      const callData = tokenInterface.encodeFunctionData("mint", [1]);
-
-      const userOp = {
-        sender: addr1.address,
-        nonce: 0,
-        callData: callData,
-        callGasLimit: 100_000,
-        verificationGasLimit: 50_000,
-        preVerificationGas: 20_000,
-        maxFeePerGas: 50 * 10**9,
-        maxPriorityFeePerGas: 10 * 10**9,
-        paymasterAndData: ethers.AbiCoder.defaultAbiCoder().encode(
-          ["address", "uint256"],
-          [dtaiocToken.target, 0]
-        )
-      };
-
-      const userOpHash = ethers.randomBytes(32);
-      const maxCost = ethers.parseEther("0.01");
-
-      try {
-        // Simulate validatePaymasterUserOp via mockEntryPoint with staticCall
-        const result = await mockEntryPoint.validatePaymasterUserOp.staticCall(
-          paymaster.target,
-          userOp,
-          userOpHash,
-          maxCost,
-          { gasLimit: 500_000 }
-        );
-        console.log("validatePaymasterUserOp result:", result);
-        const [context, validUntil, validAfter] = result;
-        expect(context).to.not.equal("0x");
-        expect(validUntil).to.be.gt(0);
-        expect(validAfter).to.equal(0);
-
-        // Update state by calling validatePaymasterUserOp as a transaction
-        await mockEntryPoint.connect(owner).validatePaymasterUserOp(
-          paymaster.target,
-          userOp,
-          userOpHash,
-          maxCost,
-          { gasLimit: 500_000 }
-        );
-
-        // Call postOp via mockEntryPoint
-        await mockEntryPoint.connect(owner).callPostOp(
-          paymaster.target,
-          0, // mode
-          context,
-          100_000 * 10**9, // actualGasCost
-          { gasLimit: 500_000 }
-        );
-
-        // Adjust gas limit
-        await paymaster.adjustMaxGasLimit();
-        expect(await paymaster.maxGasLimit()).to.equal(200_000); // 100,000 * 2
-      } catch (error) {
-        console.error("validatePaymasterUserOp or postOp failed:", error);
-        throw error;
-      }
-    });
-
-    it("should check Basename status", async function () {
-      await mockResolver.setBasename(addr1.address, "user.base.eth");
-      expect(await paymaster.getBasenameStatus(addr1.address)).to.equal(true);
-      expect(await paymaster.getBasenameStatus(addr2.address)).to.equal(false);
-    });
+  it("should join with Twitter username", async function () {
+    const twitterUsername = "@user";
+    await basenameResolver.setTwitterUsername(user.address, twitterUsername);
+    const messageHash = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "string", "uint256"],
+        [user.address, twitterUsername, 1]
+      )
+    );
+    const signature = await backendSigner.signMessage(ethers.getBytes(messageHash));
+    await gameContract.connect(user).joinGame(1, "", twitterUsername, signature);
+    const [, twitter,,,] = await gameContract.getPlayer(1, user.address);
+    expect(twitter).to.equal(twitterUsername);
   });
 });

@@ -3,302 +3,325 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./IBasenameResolver.sol";
+import "./BasePaymaster.sol";
+import "./MockSmartWallet.sol";
 
-interface IPaymaster {
-    function validatePaymasterUserOp(
-        UserOperation calldata userOp,
-        bytes32 userOpHash,
-        uint256 maxCost
-    ) external returns (bytes memory context, uint48 validUntil, uint48 validAfter);
-    function postOp(
-        PostOpMode mode,
-        bytes calldata context,
-        uint256 actualGasCost
+// Minimal interface for DTAIOCGame to fetch function selectors
+interface IDTAIOCGame {
+    function createGame(
+        string memory basename,
+        string memory twitterUsername,
+        bytes32[3] memory questionRootHashes,
+        uint256 gameDuration,
+        bytes memory signature
+    ) external returns (uint256);
+
+    function joinGame(
+        uint256 gameId,
+        string memory basename,
+        string memory twitterUsername,
+        bytes memory signature
     ) external;
+
+    function submitAnswers(
+        uint256 gameId,
+        uint256 stage,
+        bytes32[] memory answerHashes,
+        uint256 score,
+        bytes memory signature
+    ) external;
+
+    function mint(uint256 tokenId) external;
 }
 
-interface IBasenameResolver {
-    function resolve(address wallet) external view returns (string memory);
+// Interface for MockSmartWallet signature validation
+interface IMockSmartWallet {
+    function verifySignature(bytes32 hash, bytes memory signature) external view returns (bool);
 }
 
-interface IEntryPoint {
-    function balanceOf(address account) external view returns (uint256);
-}
+contract DTAIOCPaymaster is Ownable, ReentrancyGuard, BasePaymaster {
+    // Custom errors for gas efficiency
+    error InvalidAddress();
+    error PaymasterPaused();
+    error InvalidEntryPointCaller();
+    error InvalidCallData();
+    error InvalidInnerCallData();
+    error InvalidTargetContract();
+    error NoRegisteredIdentifier();
+    error InvalidIdentifier();
+    error BasenameMismatch();
+    error TwitterMismatch();
+    error InsufficientDeposit();
+    error WithdrawalFailed();
+    error InvalidSignature();
+    error InsufficientData(string action);
 
-struct UserOperation {
-    address sender;
-    uint256 nonce;
-    bytes callData;
-    uint256 callGasLimit;
-    uint256 verificationGasLimit;
-    uint256 preVerificationGas;
-    uint256 maxFeePerGas;
-    uint256 maxPriorityFeePerGas;
-    bytes paymasterAndData;
-}
+    // Mutable state variables
+    address public platformAddress;
+    address public tokenContract;
+    address public stakingContract;
+    address public nftContract;
+    IDTAIOCGame public immutable gameContract;
+    IBasenameResolver public immutable basenameResolver;
+    bool public paused;
 
-enum PostOpMode { opExecuted, opReverted }
+    // Mapping to track sponsored operations
+    mapping(address => uint256) public sponsoredUserOps;
 
-contract DTAIOCPaymaster is Ownable, ReentrancyGuard, IPaymaster {
-    address public immutable entryPoint;
-    address public immutable dtaiocToken;
-    address public immutable dtaiocGame;
-    address public basenameResolver;
-    bool public isPaused;
-    uint256 public maxGasLimit;
-    uint256 public maxGasPrice;
-    uint256 public maxSponsoredGas;
-    uint256 public totalSponsoredGas;
-    uint256 public avgGasUsed;
-    uint256 public minSponsorshipInterval;
-    uint256 public maxWithdrawalPerDay;
-    uint256 public lastWithdrawalTime;
-    mapping(address => uint256) public nonces;
-    mapping(address => uint256) public lastSponsoredTime;
-
-    bytes4 private constant MINT_SELECTOR = bytes4(keccak256("mint(uint256)"));
-    bytes4 private constant JOIN_GAME_SELECTOR = bytes4(keccak256("joinGame(uint256,bytes,string)"));
-    bytes4 private constant SUBMIT_ANSWERS_SELECTOR = bytes4(keccak256("submitAnswers(uint256,uint256,bytes32[],uint256,bytes)"));
-
-    event ResolverUpdated(address indexed newResolver);
+    // Events
+    event UserOpSponsored(address indexed sender, bytes32 indexed userOpHash, string action);
+    event Deposited(address indexed sender, uint256 amount);
+    event Withdrawn(address indexed recipient, uint256 amount);
     event Paused();
     event Unpaused();
-    event ConfigChanged(string param, uint256 value);
-    event UserOperationSponsored(address indexed wallet, address indexed target, bytes4 functionSelector, uint256 gasUsed);
-    event SponsorshipAttempt(address indexed wallet, bytes4 functionSelector, bool success, uint256 gasUsed);
-    event ValidationFailed(address indexed wallet, string reason);
-    event NonceUsed(address indexed wallet, uint256 nonce);
-    event DepositReceived(address indexed sender, uint256 amount);
-    event EthWithdrawn(address indexed recipient, uint256 amount);
-    event LowBalanceWarning(uint256 balance);
-    event AutoPausedHighGasPrice(uint256 gasPrice);
-    event CircuitBreakerTriggered(address indexed wallet);
-
-    modifier onlyEntryPoint() {
-        require(msg.sender == entryPoint, "Only EntryPoint");
-        _;
-    }
-
-    modifier notPaused() {
-        require(!isPaused, "Paused");
-        _;
-    }
-
-    modifier withinRateLimit(address wallet) {
-        require(
-            block.timestamp >= lastSponsoredTime[wallet] + minSponsorshipInterval,
-            "RateLimitExceeded"
-        );
-        _;
-    }
+    event ValidationFailed(address indexed sender, string reason);
 
     constructor(
         address _entryPoint,
-        address _dtaiocToken,
-        address _dtaiocGame,
+        address _platformAddress,
+        address _gameContract,
         address _basenameResolver
-    ) Ownable(msg.sender) {
-        require(_entryPoint != address(0), "Invalid EntryPoint");
-        require(_dtaiocToken != address(0), "Invalid DTAIOCToken");
-        require(_dtaiocGame != address(0), "Invalid DTAIOCGame");
-        require(_basenameResolver != address(0), "Invalid Resolver");
-
-        entryPoint = _entryPoint;
-        dtaiocToken = _dtaiocToken;
-        dtaiocGame = _dtaiocGame;
-        basenameResolver = _basenameResolver;
-
-        maxGasLimit = 200_000;
-        maxGasPrice = 100 * 10**9;
-        maxSponsoredGas = 10_000_000;
-        minSponsorshipInterval = 60;
-        maxWithdrawalPerDay = 1 ether;
-        isPaused = false;
+    ) Ownable(msg.sender) BasePaymaster(IEntryPoint(_entryPoint)) {
+        if (_entryPoint == address(0)) revert InvalidAddress();
+        if (_platformAddress == address(0)) revert InvalidAddress();
+        if (_gameContract == address(0)) revert InvalidAddress();
+        if (_basenameResolver == address(0)) revert InvalidAddress();
+        platformAddress = _platformAddress;
+        gameContract = IDTAIOCGame(_gameContract);
+        basenameResolver = IBasenameResolver(_basenameResolver);
+        paused = false;
     }
 
-    receive() external payable {
-        emit DepositReceived(msg.sender, msg.value);
+    // Deposit funds to EntryPoint
+    function deposit() external payable nonReentrant {
+        if (msg.value == 0) revert InsufficientDeposit();
+        entryPoint.depositTo{value: msg.value}(address(this));
+        emit Deposited(msg.sender, msg.value);
     }
 
-    function withdraw(address payable recipient, uint256 amount) external onlyOwner nonReentrant {
-        require(recipient != address(0), "Invalid Recipient");
-        require(amount > 0, "Invalid Amount");
-
-        // Enforce maxWithdrawalPerDay for all withdrawals
-        require(amount <= maxWithdrawalPerDay, "WithdrawalLimitExceeded");
-
-        // Update lastWithdrawalTime if within 24 hours or first withdrawal
-        if (block.timestamp >= lastWithdrawalTime + 1 days) {
-            lastWithdrawalTime = block.timestamp;
-        }
-
-        uint256 balance = address(this).balance;
-        require(balance >= amount, "Insufficient Balance");
-
-        (bool success, ) = recipient.call{value: amount}("");
-        require(success, "Transfer Failed");
-
-        emit EthWithdrawn(recipient, amount);
+    // Withdraw funds to platformAddress
+    function withdraw(uint256 amount) external onlyOwner nonReentrant {
+        if (amount > address(this).balance) revert InsufficientDeposit();
+        (bool success, ) = platformAddress.call{value: amount}("");
+        if (!success) revert WithdrawalFailed();
+        emit Withdrawn(platformAddress, amount);
     }
 
-    function validatePaymasterUserOp(
-        UserOperation calldata userOp,
-        bytes32 /* userOpHash */,
-        uint256 maxCost
-    )
-        external
-        override
-        onlyEntryPoint
-        notPaused
-        withinRateLimit(userOp.sender)
-        returns (bytes memory context, uint48 validUntil, uint48 validAfter)
-    {
-        // Circuit breaker: Pause if too many UserOps from one wallet
-        if (lastSponsoredTime[userOp.sender] > block.timestamp - 10) {
-            isPaused = true;
-            emit CircuitBreakerTriggered(userOp.sender);
-            revert("CircuitBreakerTriggered");
-        }
+    // Setters with validation
+    // function setGameContract(address _gameContract) external onlyOwner {
+    //     if (_gameContract == address(0)) revert InvalidAddress();
+    //     gameContract = IDTAIOCGame(_gameContract);
+    // }
 
-        if (userOp.maxFeePerGas > maxGasPrice) {
-            isPaused = true;
-            emit AutoPausedHighGasPrice(userOp.maxFeePerGas);
-            emit ValidationFailed(userOp.sender, "HighGasPrice");
-            revert("HighGasPrice");
-        }
-
-        uint256 totalGas = userOp.callGasLimit + userOp.verificationGasLimit + userOp.preVerificationGas;
-        if (totalGas > maxGasLimit) {
-            emit ValidationFailed(userOp.sender, "GasLimitExceeded");
-            revert("GasLimitExceeded");
-        }
-
-        if (totalSponsoredGas + totalGas > maxSponsoredGas) {
-            emit ValidationFailed(userOp.sender, "MaxSponsoredGasExceeded");
-            revert("MaxSponsoredGasExceeded");
-        }
-
-        uint256 requiredBalance = maxCost;
-        if (IEntryPoint(entryPoint).balanceOf(address(this)) < requiredBalance) {
-            emit ValidationFailed(userOp.sender, "InsufficientFunds");
-            emit LowBalanceWarning(IEntryPoint(entryPoint).balanceOf(address(this)));
-            revert("InsufficientFunds");
-        }
-
-        // Extract target and nonce from paymasterAndData
-        if (userOp.paymasterAndData.length < 52) { // 20 bytes (address) + 32 bytes (uint256)
-            emit ValidationFailed(userOp.sender, "InvalidPaymasterData");
-            revert("InvalidPaymasterData");
-        }
-        (address target, uint256 providedNonce) = abi.decode(userOp.paymasterAndData, (address, uint256));
-
-        // Extract selector from callData
-        if (userOp.callData.length < 4) {
-            emit ValidationFailed(userOp.sender, "InvalidCallData");
-            revert("InvalidCallData");
-        }
-        bytes4 selector = bytes4(userOp.callData);
-
-        // Validate target and selector
-        bool isValidTarget = false;
-        if (target == dtaiocToken && selector == MINT_SELECTOR) {
-            isValidTarget = true;
-        } else if (target == dtaiocGame && (selector == JOIN_GAME_SELECTOR || selector == SUBMIT_ANSWERS_SELECTOR)) {
-            isValidTarget = true;
-        }
-        if (!isValidTarget) {
-            emit ValidationFailed(userOp.sender, "InvalidTargetOrFunction");
-            revert("InvalidTargetOrFunction");
-        }
-
-        // Validate Basename
-        try IBasenameResolver(basenameResolver).resolve(userOp.sender) returns (string memory basename) {
-            if (bytes(basename).length == 0) {
-                emit ValidationFailed(userOp.sender, "InvalidBasename");
-                revert("InvalidBasename");
-            }
-        } catch {
-            emit ValidationFailed(userOp.sender, "BasenameResolutionFailed");
-            revert("BasenameResolutionFailed");
-        }
-
-        // Validate nonce
-        uint256 expectedNonce = nonces[userOp.sender];
-        if (providedNonce != expectedNonce) {
-            emit ValidationFailed(userOp.sender, "InvalidNonce");
-            revert("InvalidNonce");
-        }
-        nonces[userOp.sender]++;
-        emit NonceUsed(userOp.sender, expectedNonce);
-
-        lastSponsoredTime[userOp.sender] = block.timestamp;
-
-        context = abi.encode(userOp.sender, target, selector, totalGas);
-        validUntil = uint48(block.timestamp + 1 hours);
-        validAfter = 0;
-        emit SponsorshipAttempt(userOp.sender, selector, true, totalGas);
+    function setTokenContract(address _tokenContract) external onlyOwner {
+        if (_tokenContract == address(0)) revert InvalidAddress();
+        tokenContract = _tokenContract;
     }
 
-    function postOp(
-        PostOpMode mode,
-        bytes calldata context,
-        uint256 actualGasCost
-    ) external override onlyEntryPoint {
-        (address wallet, address target, bytes4 selector) = abi.decode(context, (address, address, bytes4));
-        uint256 actualGas = actualGasCost / (tx.gasprice > 0 ? tx.gasprice : 1 gwei);
-        totalSponsoredGas += actualGas;
-        avgGasUsed = actualGas;
-
-        emit UserOperationSponsored(wallet, target, selector, actualGas);
-        if (mode == PostOpMode.opReverted) {
-            emit SponsorshipAttempt(wallet, selector, false, actualGas);
-            revert("OpReverted");
-        }
+    function setStakingContract(address _stakingContract) external onlyOwner {
+        if (_stakingContract == address(0)) revert InvalidAddress();
+        stakingContract = _stakingContract;
     }
 
+    function setNFTContract(address _nftContract) external onlyOwner {
+        if (_nftContract == address(0)) revert InvalidAddress();
+        nftContract = _nftContract;
+    }
+
+    // Pause and unpause functions
     function pause() external onlyOwner {
-        require(!isPaused, "Already Paused");
-        isPaused = true;
+        paused = true;
         emit Paused();
     }
 
     function unpause() external onlyOwner {
-        require(isPaused, "Not Paused");
-        isPaused = false;
+        paused = false;
         emit Unpaused();
     }
 
-    function setBasenameResolver(address newResolver) external onlyOwner {
-        require(newResolver != address(0), "Invalid Resolver");
-        basenameResolver = newResolver;
-        emit ResolverUpdated(newResolver);
-    }
+    // ERC-4337 validatePaymasterUserOp
+    function validatePaymasterUserOp(
+        UserOperation calldata userOp,
+        bytes32 userOpHash,
+        uint256 /* maxCost */
+    ) external override returns (bytes memory context, uint256 validationData) {
+        if (msg.sender != address(entryPoint)) revert InvalidEntryPointCaller();
+        if (paused) revert PaymasterPaused();
 
-    function setMaxGasLimit(uint256 newLimit) external onlyOwner {
-        require(newLimit >= 50_000 && newLimit <= 500_000, "Invalid Gas Limit");
-        maxGasLimit = newLimit;
-        emit ConfigChanged("maxGasLimit", newLimit);
-    }
-
-    function setMaxGasPrice(uint256 newPrice) external onlyOwner {
-        require(newPrice >= 10 * 10**9 && newPrice <= 500 * 10**9, "Invalid Gas Price");
-        maxGasPrice = newPrice;
-        emit ConfigChanged("maxGasPrice", newPrice);
-    }
-
-    function adjustMaxGasLimit() external onlyOwner {
-        uint256 newLimit = avgGasUsed * 2;
-        if (newLimit < 50_000) newLimit = 50_000;
-        if (newLimit > 500_000) newLimit = 500_000;
-        maxGasLimit = newLimit;
-        emit ConfigChanged("maxGasLimit", newLimit);
-    }
-
-    function getBasenameStatus(address wallet) external view returns (bool hasValidBasename) {
-        try IBasenameResolver(basenameResolver).resolve(wallet) returns (string memory basename) {
-            return bytes(basename).length > 0;
-        } catch {
-            return false;
+        // Validate UserOperation signature
+        if (!IMockSmartWallet(userOp.sender).verifySignature(userOpHash, userOp.signature)) {
+            emit ValidationFailed(userOp.sender, "Invalid UserOperation signature");
+            revert InvalidSignature();
         }
+
+        // Extract target and inner call data
+        address target;
+        bytes4 functionSelector;
+        bytes memory innerCallData;
+
+        if (userOp.callData.length < 4) {
+            emit ValidationFailed(userOp.sender, "Invalid callData length");
+            revert InvalidCallData();
+        }
+
+        functionSelector = bytes4(userOp.callData[:4]);
+        if (functionSelector == MockSmartWallet.execute.selector) {
+            (target, innerCallData) = abi.decode(userOp.callData[4:], (address, bytes));
+            if (innerCallData.length < 4) {
+                emit ValidationFailed(userOp.sender, "innerCallData too short for selector");
+                revert InvalidInnerCallData();
+            }
+            // Extract selector manually
+            functionSelector = bytes4(
+                bytes.concat(
+                    innerCallData[0],
+                    innerCallData[1],
+                    innerCallData[2],
+                    innerCallData[3]
+                )
+            );
+        } else {
+            target = userOp.sender;
+            innerCallData = userOp.callData;
+        }
+
+        // Validate target contract
+        bool isValidContract = target == address(gameContract) ||
+                              target == tokenContract ||
+                              target == stakingContract ||
+                              target == nftContract;
+        if (!isValidContract) {
+            emit ValidationFailed(userOp.sender, "Invalid target contract");
+            revert InvalidTargetContract();
+        }
+
+        // Validate user actions using dynamic selectors
+        bool isUserAction = functionSelector == gameContract.createGame.selector ||
+                            functionSelector == gameContract.joinGame.selector ||
+                            functionSelector == gameContract.submitAnswers.selector ||
+                            functionSelector == gameContract.mint.selector;
+        if (isUserAction) {
+            // Fetch basename and Twitter username
+            string memory resolvedBasename = basenameResolver.resolve(userOp.sender);
+            string memory resolvedTwitter = basenameResolver.getTwitterUsername(userOp.sender);
+            bool hasBasename = bytes(resolvedBasename).length != 0;
+            bool hasTwitter = bytes(resolvedTwitter).length != 0;
+            if (!hasBasename && !hasTwitter) {
+                emit ValidationFailed(userOp.sender, "No registered basename or Twitter username");
+                revert NoRegisteredIdentifier();
+            }
+
+            // Validate parameters for createGame and joinGame
+            if (functionSelector == gameContract.createGame.selector) {
+                if (innerCallData.length < 4 + 32 + 32 + 96 + 32 + 32) {
+                    emit ValidationFailed(userOp.sender, "Insufficient data for createGame");
+                    revert InsufficientData("createGame");
+                }
+                // Copy bytes from offset 4 for decoding
+                bytes memory decodeData = new bytes(innerCallData.length - 4);
+                for (uint256 i = 0; i < decodeData.length; i++) {
+                    decodeData[i] = innerCallData[i + 4];
+                }
+                (string memory basename, string memory twitterUsername,,,) = 
+                    abi.decode(decodeData, (string, string, bytes32[3], uint256, bytes));
+                _validateIdentifier(userOp.sender, basename, twitterUsername, resolvedBasename, resolvedTwitter);
+            } else if (functionSelector == gameContract.joinGame.selector) {
+                if (innerCallData.length < 4 + 32 + 32 + 32 + 32) {
+                    emit ValidationFailed(userOp.sender, "Insufficient data for joinGame");
+                    revert InsufficientData("joinGame");
+                }
+                // Copy bytes from offset 4 for decoding
+                bytes memory decodeData = new bytes(innerCallData.length - 4);
+                for (uint256 i = 0; i < decodeData.length; i++) {
+                    decodeData[i] = innerCallData[i + 4];
+                }
+                (uint256 gameId, string memory basename, string memory twitterUsername,) = 
+                    abi.decode(decodeData, (uint256, string, string, bytes));
+                _validateIdentifier(userOp.sender, basename, twitterUsername, resolvedBasename, resolvedTwitter);
+            }
+        }
+
+        context = abi.encode(userOp.sender, userOpHash, functionSelector);
+        validationData = _packValidationData(false, uint48(block.timestamp + 1 hours), 0);
+        return (context, validationData);
+    }
+
+    // ERC-4337 postOp
+    function postOp(
+        uint8 /* mode */,
+        bytes calldata context,
+        uint256 /* actualGasCost */
+    ) external {
+        if (msg.sender != address(entryPoint)) revert InvalidEntryPointCaller();
+        if (paused) revert PaymasterPaused();
+
+        (address sender, bytes32 userOpHash, bytes4 functionSelector) = 
+            abi.decode(context, (address, bytes32, bytes4));
+        sponsoredUserOps[sender]++;
+        string memory action = _getActionName(functionSelector);
+        emit UserOpSponsored(sender, userOpHash, action);
+    }
+
+    // Internal function to validate basename or Twitter username
+    function _validateIdentifier(
+        address sender,
+        string memory providedBasename,
+        string memory providedTwitter,
+        string memory resolvedBasename,
+        string memory resolvedTwitter
+    ) internal {
+        bool providedBasenameValid = bytes(providedBasename).length != 0;
+        bool providedTwitterValid = bytes(providedTwitter).length != 0;
+        bool hasBasename = bytes(resolvedBasename).length != 0;
+        bool hasTwitter = bytes(resolvedTwitter).length != 0;
+
+        if (providedBasenameValid == providedTwitterValid) {
+            emit ValidationFailed(sender, "Provide exactly one identifier");
+            revert InvalidIdentifier();
+        }
+
+        if (providedBasenameValid) {
+            if (!hasBasename) {
+                emit ValidationFailed(sender, "No basename registered for sender");
+                revert BasenameMismatch();
+            }
+            if (keccak256(abi.encodePacked(providedBasename)) != keccak256(abi.encodePacked(resolvedBasename))) {
+                emit ValidationFailed(sender, "Basename mismatch");
+                revert BasenameMismatch();
+            }
+        } else {
+            if (!hasTwitter) {
+                emit ValidationFailed(sender, "No Twitter username registered for sender");
+                revert TwitterMismatch();
+            }
+            if (keccak256(abi.encodePacked(providedTwitter)) != keccak256(abi.encodePacked(resolvedTwitter))) {
+                emit ValidationFailed(sender, "Twitter username mismatch");
+                revert TwitterMismatch();
+            }
+        }
+    }
+
+    // Pack validation data for ERC-4337
+    function _packValidationData(
+        bool sigFailed,
+        uint48 validUntil,
+        uint48 validAfter
+    ) internal pure returns (uint256) {
+        return (sigFailed ? 1 : 0) | (uint256(validUntil) << 160) | (uint256(validAfter) << (160 + 48));
+    }
+
+    // Get action name for logging
+    function _getActionName(bytes4 selector) private view returns (string memory) {
+        if (selector == gameContract.createGame.selector) return "createGame";
+        if (selector == gameContract.joinGame.selector) return "joinGame";
+        if (selector == gameContract.submitAnswers.selector) return "submitAnswers";
+        if (selector == gameContract.mint.selector) return "mint";
+        return "unknown";
+    }
+
+    // Receive ETH deposits
+    receive() external payable {
+        emit Deposited(msg.sender, msg.value);
     }
 }

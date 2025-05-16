@@ -1,10 +1,12 @@
 {
   "name": "dtaioc-smartcontract",
   "version": "1.0.0",
-  "description": "",
+  "description": "DTAIOC Game Smart Contract with Paymaster",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "hardhat test",
+    "compile": "hardhat compile",
+    "deploy": "hardhat deploy"
   },
   "repository": {
     "type": "git",
@@ -17,13 +19,17 @@
     "url": "https://github.com/akinwunmi-akinrimisi/DTAIOC-smartContract/issues"
   },
   "homepage": "https://github.com/akinwunmi-akinrimisi/DTAIOC-smartContract#readme",
-  "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "@openzeppelin/contracts": "^5.0.2",
-    "hardhat": "^2.24.0"
-  },
   "dependencies": {
+    "@alchemy/aa-core": "^3.0.0",
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.7",
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "@openzeppelin/contracts": "^5.0.2",
     "dotenv": "^16.5.0",
-    "ethers": "6.13.7"
+    "ethers": "^6.13.7"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.7",
+    "hardhat": "^2.22.12"
   }
 }

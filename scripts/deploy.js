@@ -13,35 +13,47 @@ async function verifyContract(contractAddress, constructorArguments, contractNam
       console.log(`${contractName} is already verified.`);
     } else {
       console.error(`Failed to verify ${contractName}:`, error.message);
+      console.log(`Contract address: ${contractAddress}`); // Log address for manual verification
     }
   }
+}
+
+async function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function main() {
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deploying contracts with:", deployer.address);
 
-  // Base Sepolia EntryPoint address (verify with Base docs)
+  // Base Sepolia EntryPoint address (Biconomy)
   const entryPointAddress = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789";
   const platformAddress = "0x37706dAb5DA56EcCa562f4f26478d1C484f0A7fB";
 
+  // Get dynamic gas prices
+  const feeData = await hre.ethers.provider.getFeeData();
+  const gasOptions = {
+    maxFeePerGas: feeData.maxFeePerGas || hre.ethers.parseUnits("50", "gwei"),
+    maxPriorityFeePerGas: feeData.maxPriorityFeePerGas || hre.ethers.parseUnits("5", "gwei"),
+  };
+
   // Deploy DTAIOCToken
   const DTAIOCTokenFactory = await hre.ethers.getContractFactory("DTAIOCToken");
-  const dtaiocToken = await DTAIOCTokenFactory.deploy();
+  const dtaiocToken = await DTAIOCTokenFactory.deploy(gasOptions);
   await dtaiocToken.waitForDeployment();
   console.log("DTAIOCToken deployed to:", dtaiocToken.target);
   await verifyContract(dtaiocToken.target, [], "DTAIOCToken");
 
   // Deploy DTAIOCNFT
   const DTAIOCNFTFactory = await hre.ethers.getContractFactory("DTAIOCNFT");
-  const dtaiocNFT = await DTAIOCNFTFactory.deploy();
+  const dtaiocNFT = await DTAIOCNFTFactory.deploy(gasOptions);
   await dtaiocNFT.waitForDeployment();
   console.log("DTAIOCNFT deployed to:", dtaiocNFT.target);
   await verifyContract(dtaiocNFT.target, [], "DTAIOCNFT");
 
   // Deploy DTAIOCStaking
   const DTAIOCStakingFactory = await hre.ethers.getContractFactory("DTAIOCStaking");
-  const dtaiocStaking = await DTAIOCStakingFactory.deploy(dtaiocToken.target, platformAddress);
+  const dtaiocStaking = await DTAIOCStakingFactory.deploy(dtaiocToken.target, platformAddress, gasOptions);
   await dtaiocStaking.waitForDeployment();
   console.log("DTAIOCStaking deployed to:", dtaiocStaking.target);
   await verifyContract(dtaiocStaking.target, [dtaiocToken.target, platformAddress], "DTAIOCStaking");
@@ -55,13 +67,13 @@ async function main() {
 
   // Deploy MockBasenameResolver
   const MockResolverFactory = await hre.ethers.getContractFactory("MockBasenameResolver");
-  const mockResolver = await MockResolverFactory.deploy();
+  const mockResolver = await MockResolverFactory.deploy(gasOptions);
   await mockResolver.waitForDeployment();
   console.log("MockBasenameResolver deployed to:", mockResolver.target);
   await verifyContract(mockResolver.target, [], "MockBasenameResolver");
 
   // Deploy DTAIOCGame
-  const backendWallet = new hre.ethers.Wallet(process.env.BACKENDSIGNERPRIVATEKEY);
+  const backendWallet = new hre.ethers.Wallet(process.env.BACKENDSIGNERPRIVATEKEY, hre.ethers.provider);
   const backendSigner = backendWallet.address;
   const DTAIOCGameFactory = await hre.ethers.getContractFactory("DTAIOCGame");
   const dtaiocGame = await DTAIOCGameFactory.deploy(
@@ -69,66 +81,92 @@ async function main() {
     dtaiocNFT.target,
     dtaiocStaking.target,
     mockResolver.target,
-    backendSigner
+    backendSigner,
+    platformAddress,
+    gasOptions
   );
   await dtaiocGame.waitForDeployment();
   console.log("DTAIOCGame deployed to:", dtaiocGame.target);
   await verifyContract(
     dtaiocGame.target,
-    [dtaiocToken.target, dtaiocNFT.target, dtaiocStaking.target, mockResolver.target, backendSigner],
+    [dtaiocToken.target, dtaiocNFT.target, dtaiocStaking.target, mockResolver.target, backendSigner, platformAddress],
     "DTAIOCGame"
   );
-
-  // Deploy MockEntryPoint
-  const MockEntryPointFactory = await hre.ethers.getContractFactory("MockEntryPoint");
-  const mockEntryPoint = await MockEntryPointFactory.deploy();
-  await mockEntryPoint.waitForDeployment();
-  console.log("MockEntryPoint deployed to:", mockEntryPoint.target);
-  await verifyContract(mockEntryPoint.target, [], "MockEntryPoint");
 
   // Deploy DTAIOCPaymaster
   const DTAIOCPaymasterFactory = await hre.ethers.getContractFactory("DTAIOCPaymaster");
   const paymaster = await DTAIOCPaymasterFactory.deploy(
     entryPointAddress,
-    dtaiocToken.target,
+    platformAddress,
     dtaiocGame.target,
-    mockResolver.target
+    mockResolver.target,
+    gasOptions
   );
   await paymaster.waitForDeployment();
   console.log("DTAIOCPaymaster deployed to:", paymaster.target);
   await verifyContract(
     paymaster.target,
-    [entryPointAddress, dtaiocToken.target, dtaiocGame.target, mockResolver.target],
+    [entryPointAddress, platformAddress, dtaiocGame.target, mockResolver.target],
     "DTAIOCPaymaster"
   );
 
-  // Configure permissions
-  console.log("Setting game contract for NFT...");
-  const nftTx = await dtaiocNFT.setGameContract(dtaiocGame.target);
-  await nftTx.wait();
-  console.log("NFT game contract set to:", dtaiocGame.target);
+  // Verify Paymaster owner
+  const paymasterOwner = await paymaster.owner();
+  console.log("DTAIOCPaymaster owner:", paymasterOwner);
+  if (paymasterOwner !== deployer.address) {
+    console.error("Error: Deployer is not the owner of DTAIOCPaymaster");
+    throw new Error("Paymaster ownership mismatch");
+  }
 
-  console.log("Setting game contract for Staking...");
+  // Configure Paymaster
+  console.log("Setting token, staking, and NFT contracts in Paymaster...");
   try {
-    const stakingTx = await dtaiocStaking.setGameContract(dtaiocGame.target);
-    await stakingTx.wait();
-    console.log("Staking game contract set to:", dtaiocGame.target);
+    await paymaster.setTokenContract(dtaiocToken.target, gasOptions).then(tx => tx.wait());
+    console.log("Token contract set to:", dtaiocToken.target);
+    await paymaster.setStakingContract(dtaiocStaking.target, gasOptions).then(tx => tx.wait());
+    console.log("Staking contract set to:", dtaiocStaking.target);
+    await paymaster.setNFTContract(dtaiocNFT.target, gasOptions).then(tx => tx.wait());
+    console.log("NFT contract set to:", dtaiocNFT.target);
   } catch (error) {
-    console.error("Failed to set game contract for Staking:", error);
+    console.error("Failed to configure Paymaster:", error.message);
     throw error;
   }
 
-  // Verify gameContract
-  const gameContractAddress = await dtaiocStaking.gameContract();
-  console.log("Verified gameContract in Staking:", gameContractAddress);
-  if (gameContractAddress === hre.ethers.ZeroAddress) {
-    throw new Error("Failed to set gameContract in Staking");
+  // Configure DTAIOCNFT and DTAIOCStaking
+  console.log("Configuring DTAIOCNFT and DTAIOCStaking...");
+  try {
+    await dtaiocNFT.setGameContract(dtaiocGame.target, gasOptions).then(tx => tx.wait());
+    console.log("DTAIOCNFT game contract set to:", dtaiocGame.target);
+    await dtaiocStaking.setGameContract(dtaiocGame.target, gasOptions).then(tx => tx.wait());
+    console.log("DTAIOCStaking game contract set to:", dtaiocGame.target);
+  } catch (error) {
+    console.error("Failed to configure contracts:", error.message);
+    throw error;
   }
 
   // Fund Paymaster
-  const fundAmount = hre.ethers.parseEther("0.1");
-  await deployer.sendTransaction({ to: paymaster.target, value: fundAmount });
-  console.log(`Funded Paymaster with ${hre.ethers.formatEther(fundAmount)} ETH`);
+  const fundAmount = hre.ethers.parseEther("0.01");
+  console.log(`Funding Paymaster with ${hre.ethers.formatEther(fundAmount)} ETH...`);
+  try {
+    const tx = await deployer.sendTransaction({
+      to: paymaster.target,
+      value: fundAmount,
+      ...gasOptions,
+    });
+    await tx.wait();
+    console.log("ETH sent to Paymaster");
+
+    console.log("Depositing to EntryPoint...");
+    const depositTx = await paymaster.deposit({
+      value: fundAmount,
+      ...gasOptions,
+    });
+    await depositTx.wait();
+    console.log("Paymaster deposited to EntryPoint");
+  } catch (error) {
+    console.error("Funding failed:", error.message);
+    throw error;
+  }
 
   // Output addresses for forkGameSimulation.js
   console.log("Update forkGameSimulation.js with:");

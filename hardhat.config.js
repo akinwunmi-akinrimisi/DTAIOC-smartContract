@@ -1,5 +1,8 @@
-require("@nomicfoundation/hardhat-toolbox");
-require("dotenv").config();
+// require("@nomicfoundation/hardhat-toolbox");
+// require("dotenv").config();
+
+require("@nomicfoundation/hardhat-ethers");
+require("@nomicfoundation/hardhat-chai-matchers");
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
@@ -12,21 +15,20 @@ module.exports = {
       },
       viaIR: true,
       outputSelection: {
-                "*": {
-                    "*": ["abi", "evm.bytecode", "evm.deployedBytecode", "storageLayout"]
-                }
+        "*": {
+          "*": ["abi", "evm.bytecode", "evm.deployedBytecode", "storageLayout"]
+        }
       }
     }
   },
   networks: {
     hardhat: {
-      
       forking: {
         url: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
         blockNumber: process.env.FORK_BLOCK_NUMBER ? parseInt(process.env.FORK_BLOCK_NUMBER) : undefined
       },
       accounts: {
-        count: 10, // Make sure we have enough accounts for the simulation
+        count: 10,
         accountsBalance: "10000000000000000000000" // 10000 ETH
       }
     },
@@ -35,9 +37,10 @@ module.exports = {
       accounts: [
         process.env.PRIVATE_KEY,
         process.env.PRIVATE_KEY1,
-        process.env.PRIVATE_KEY2
+        process.env.PRIVATE_KEY2,
+        process.env.BACKENDSIGNERPRIVATEKEY
       ].filter(Boolean),
-      gasPrice: 1000000000, // 1 gwei
+      // Removed gasPrice to use dynamic pricing
     }
   },
   mocha: {

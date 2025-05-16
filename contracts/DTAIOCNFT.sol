@@ -5,21 +5,28 @@ import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract DTAIOCNFT is ERC721URIStorage, Ownable {
-    address public gameContract;
+    // Custom errors for gas efficiency
+    error InvalidAddress();
+    error InvalidRank();
+    error InvalidTokenURI();
+    error UnauthorizedCaller();
+
+    // Immutable state variables
+    address public immutable gameContract;
     uint256 private _tokenIdCounter;
 
-    constructor() ERC721("DTriviaAIOnChain NFT", "DTAIOCNFT") Ownable(msg.sender) {
+    // Events
+    event NFTMinted(uint256 indexed tokenId, address indexed recipient, uint256 gameId, uint256 rank, string tokenURI);
+
+    constructor(address _gameContract) ERC721("DTriviaAIOnChain NFT", "DTAIOCNFT") Ownable(msg.sender) {
+        if (_gameContract == address(0)) revert InvalidAddress();
+        gameContract = _gameContract;
         _tokenIdCounter = 0;
     }
 
     modifier onlyGameContract() {
-        require(msg.sender == gameContract, "Only game contract can call");
+        if (msg.sender != gameContract) revert UnauthorizedCaller();
         _;
-    }
-
-    function setGameContract(address _gameContract) public onlyOwner {
-        require(_gameContract != address(0), "Invalid game contract address");
-        gameContract = _gameContract;
     }
 
     function mintNFT(address recipient, uint256 gameId, uint256 rank, string memory tokenURI)
@@ -27,9 +34,9 @@ contract DTAIOCNFT is ERC721URIStorage, Ownable {
         onlyGameContract
         returns (uint256)
     {
-        require(recipient != address(0), "Invalid recipient address");
-        require(rank >= 1 && rank <= 3, "Invalid rank");
-        require(bytes(tokenURI).length > 0, "Invalid token URI");
+        if (recipient == address(0)) revert InvalidAddress();
+        if (rank < 1 || rank > 3) revert InvalidRank();
+        if (!_isValidTokenURI(tokenURI)) revert InvalidTokenURI();
 
         _tokenIdCounter++;
         uint256 newTokenId = _tokenIdCounter;
@@ -40,5 +47,30 @@ contract DTAIOCNFT is ERC721URIStorage, Ownable {
         return newTokenId;
     }
 
-    event NFTMinted(uint256 indexed tokenId, address indexed recipient, uint256 gameId, uint256 rank, string tokenURI);
+    // Internal function to validate IPFS token URI
+    function _isValidTokenURI(string memory tokenURI) internal pure returns (bool) {
+        bytes memory uriBytes = bytes(tokenURI);
+        if (uriBytes.length < 7) return false; // Minimum length for "ipfs://"
+
+        // Check prefix "ipfs://"
+        bytes memory prefix = bytes("ipfs://");
+        for (uint256 i = 0; i < 7; i++) {
+            if (uriBytes[i] != prefix[i]) return false;
+        }
+
+        // Check CID length (46 for CIDv0, e.g., "bafybeigofcndglhgthcq6qrmj3nuc3ahn7diovjxytuifk54t5svhufe4i")
+        if (uriBytes.length != 53) return false; // 7 (prefix) + 46 (CID)
+
+        // Basic CID format check (alphanumeric base32)
+        for (uint256 i = 7; i < uriBytes.length; i++) {
+            bytes1 b = uriBytes[i];
+            if (
+                !(b >= 0x30 && b <= 0x39) && // 0-9
+                !(b >= 0x61 && b <= 0x7A) && // a-z
+                !(b >= 0x41 && b <= 0x5A)    // A-Z
+            ) return false;
+        }
+
+        return true;
+    }
 }
